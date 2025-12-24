@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-구글 뉴스 크롤러 - 구글시트 업로드 버전
-지난 1주일 기사만 크롤링하여 구글 시트에 추가
+구글 뉴스 크롤러 - 날짜 범위 지정 버전
+시작일과 종료일을 지정하여 특정 기간의 기사만 크롤링하여 구글 시트에 추가
 """
 
 from selenium import webdriver
@@ -17,6 +17,7 @@ import os
 import stat
 import subprocess
 import platform
+from datetime import datetime
 from urllib.parse import quote
 
 try:
@@ -77,14 +78,68 @@ def setup_driver():
         return None
 
 
-def search_google_news_recent(driver, query):
-    """구글 뉴스 검색 (지난 1주일)"""
+def format_date_for_google(date_str):
+    """
+    날짜 문자열을 구글 검색용 형식(MM/DD/YYYY)으로 변환
+    
+    Args:
+        date_str: 날짜 문자열 (YYYY-MM-DD, YYYY/MM/DD, YY.MM.DD 등)
+    
+    Returns:
+        str: MM/DD/YYYY 형식의 날짜 문자열
+    """
     try:
-        url = f"https://www.google.com/search?q={quote(query)}&tbm=nws&tbs=qdr:w"
+        # 다양한 입력 형식 지원
+        date_str = date_str.strip().replace('.', '-').replace('/', '-')
+        
+        # YYYY-MM-DD 형식으로 변환 시도
+        if len(date_str.split('-')) == 3:
+            parts = date_str.split('-')
+            if len(parts[0]) == 4:  # YYYY-MM-DD
+                year, month, day = parts
+            elif len(parts[2]) == 4:  # DD-MM-YYYY
+                day, month, year = parts
+            else:  # YY-MM-DD (2자리 연도)
+                year, month, day = parts
+                year = '20' + year if int(year) < 50 else '19' + year
+        else:
+            raise ValueError("날짜 형식을 인식할 수 없습니다.")
+        
+        # MM/DD/YYYY 형식으로 변환
+        return f"{int(month):02d}/{int(day):02d}/{year}"
+    except Exception as e:
+        raise ValueError(f"날짜 변환 오류: {e}. 올바른 형식 예: '2024-01-01', '2024/01/01', '24.01.01'")
+
+
+def search_google_news_date_range(driver, query, start_date, end_date):
+    """
+    구글 뉴스 검색 (날짜 범위 지정)
+    
+    Args:
+        driver: Selenium WebDriver 객체
+        query: 검색어
+        start_date: 시작일 (MM/DD/YYYY 형식 또는 변환 가능한 형식)
+        end_date: 종료일 (MM/DD/YYYY 형식 또는 변환 가능한 형식)
+    
+    Returns:
+        bool: 성공 여부
+    """
+    try:
+        # 날짜 형식 변환
+        start_formatted = format_date_for_google(start_date)
+        end_formatted = format_date_for_google(end_date)
+        
+        # 구글 검색 URL 생성 (날짜 범위 지정)
+        # tbs=cdr:1,cd_min:MM/DD/YYYY,cd_max:MM/DD/YYYY
+        date_range = f"cdr:1,cd_min:{start_formatted},cd_max:{end_formatted}"
+        url = f"https://www.google.com/search?q={quote(query)}&tbm=nws&tbs={date_range}"
+        
+        print(f"  검색 URL: {url[:100]}...")
         driver.get(url)
         time.sleep(3)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"  날짜 범위 검색 오류: {e}")
         return False
 
 
@@ -201,8 +256,8 @@ def extract_articles_from_page(driver, seen_links):
         return []
 
 
-def extract_recent_articles(driver, max_articles=MAX_ARTICLES_PER_QUERY):
-    """최신 기사만 추출 (페이지네이션 지원)"""
+def extract_articles_with_pagination(driver, max_articles=MAX_ARTICLES_PER_QUERY, start_date=None, end_date=None):
+    """기사 추출 (페이지네이션 지원, 날짜 범위 유지)"""
     all_articles = []
     seen_links = set()
     page = 1
@@ -223,8 +278,16 @@ def extract_recent_articles(driver, max_articles=MAX_ARTICLES_PER_QUERY):
                 else:
                     next_start = 10
                 
+                # 날짜 범위 파라미터 유지
                 query = current_url.split('q=')[1].split('&')[0] if 'q=' in current_url else ''
-                next_url = f"https://www.google.com/search?q={query}&tbm=nws&tbs=qdr:w&start={next_start}"
+                
+                if start_date and end_date:
+                    start_formatted = format_date_for_google(start_date)
+                    end_formatted = format_date_for_google(end_date)
+                    date_range = f"cdr:1,cd_min:{start_formatted},cd_max:{end_formatted}"
+                    next_url = f"https://www.google.com/search?q={query}&tbm=nws&tbs={date_range}&start={next_start}"
+                else:
+                    next_url = f"https://www.google.com/search?q={query}&tbm=nws&start={next_start}"
                 
                 driver.get(next_url)
                 time.sleep(2)
@@ -295,14 +358,35 @@ def get_existing_urls(worksheet):
     return existing_urls
 
 
-def crawl_recent_news(
-    spreadsheet_id,
+def crawl_news_by_date_range(
+    start_date,
+    end_date,
+    spreadsheet_id=None,
     credentials_file='credentials.json',
-    sheet_name='시트7'
+    sheet_name='시트11'
 ):
-    """최신 기사만 크롤링하여 구글 시트에 추가"""
+    """
+    지정된 날짜 범위의 기사만 크롤링하여 구글 시트에 추가
+    
+    Args:
+        start_date: 시작일 (예: '2024-01-01', '2024/01/01', '24.01.01')
+        end_date: 종료일 (예: '2024-12-31', '2024/12/31', '24.12.31')
+        spreadsheet_id: 구글 스프레드시트 ID (None이면 .env에서 가져옴)
+        credentials_file: 구글 인증 파일 경로
+        sheet_name: 시트 이름
+    """
     if not SHEETS_AVAILABLE:
         print("오류: gspread가 설치되지 않았습니다.")
+        return False
+    
+    # 환경 변수에서 가져오기
+    if spreadsheet_id is None:
+        spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID', '1oYJqCNpGAPBwocvM_yjgXqLBUR07h9_GoiGcAFYQsF8')
+        credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', credentials_file)
+        sheet_name = os.getenv('GOOGLE_CRAWL_WORKSHEET', sheet_name)
+    
+    if not spreadsheet_id:
+        print("오류: GOOGLE_SPREADSHEET_ID를 .env 파일에 설정해주세요.")
         return False
     
     if not os.path.exists(credentials_file):
@@ -329,6 +413,7 @@ def crawl_recent_news(
             worksheet.append_row(['경쟁사', '경쟁사+키워드', '제목', '본문', 'URL'])
         
         print(f"구글 시트 연결 완료: {spreadsheet.url}")
+        print(f"크롤링 기간: {start_date} ~ {end_date}")
     except Exception as e:
         print(f"구글 시트 연결 오류: {e}")
         return False
@@ -347,10 +432,11 @@ def crawl_recent_news(
         for idx, query in enumerate(all_search_queries, 1):
             print(f"\n[{idx}/{len(all_search_queries)}] {query} 처리 중...")
             
-            if not search_google_news_recent(driver, query):
+            if not search_google_news_date_range(driver, query, start_date, end_date):
+                print(f"  검색 실패, 건너뜀")
                 continue
             
-            articles = extract_recent_articles(driver, MAX_ARTICLES_PER_QUERY)
+            articles = extract_articles_with_pagination(driver, MAX_ARTICLES_PER_QUERY, start_date, end_date)
             print(f"  {len(articles)}개 기사 발견")
             
             for i, article in enumerate(articles, 1):
@@ -387,6 +473,7 @@ def crawl_recent_news(
             time.sleep(1)
         
         print(f"\n완료: 신규 기사 {new_articles_count}개 추가됨")
+        print(f"크롤링 기간: {start_date} ~ {end_date}")
         return True
         
     finally:
@@ -395,15 +482,42 @@ def crawl_recent_news(
 
 def main():
     """메인 실행 함수"""
+    import sys
+    
+    # 명령줄 인자로 날짜 지정
+    if len(sys.argv) >= 3:
+        start_date = sys.argv[1]
+        end_date = sys.argv[2]
+    else:
+        # 사용 예시
+        print("사용법: python google_crawler_date_range.py <시작일> <종료일>")
+        print("예시: python google_crawler_date_range.py 2024-01-01 2024-01-31")
+        print("예시: python google_crawler_date_range.py 2024/01/01 2024/01/31")
+        print("\n날짜 형식: YYYY-MM-DD, YYYY/MM/DD, YY.MM.DD 등")
+        print("\n인자 없이 실행하면 기본값 사용:")
+        print("  시작일: 2024-01-01")
+        print("  종료일: 오늘")
+        
+        # 기본값: 올해 1월 1일부터 오늘까지
+        start_date = datetime.now().strftime('%Y-01-01')
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        
+        print(f"\n기본값으로 실행: {start_date} ~ {end_date}")
+        response = input("계속하시겠습니까? (y/n): ")
+        if response.lower() != 'y':
+            return
+    
     spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID', '1oYJqCNpGAPBwocvM_yjgXqLBUR07h9_GoiGcAFYQsF8')
     credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
-    sheet_name = os.getenv('GOOGLE_CRAWL_WORKSHEET', '경쟁사 동향 분석')
+    sheet_name = os.getenv('GOOGLE_CRAWL_WORKSHEET', '시트11')
     
-    if not spreadsheet_id:
-        print("오류: GOOGLE_SPREADSHEET_ID를 .env 파일에 설정해주세요.")
-        return
-    
-    crawl_recent_news(spreadsheet_id, credentials_file, sheet_name)
+    crawl_news_by_date_range(
+        start_date=start_date,
+        end_date=end_date,
+        spreadsheet_id=spreadsheet_id,
+        credentials_file=credentials_file,
+        sheet_name=sheet_name
+    )
 
 
 if __name__ == "__main__":

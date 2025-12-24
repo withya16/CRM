@@ -16,7 +16,6 @@ import time
 import os
 import stat
 import subprocess
-import platform
 from urllib.parse import quote
 
 try:
@@ -56,17 +55,11 @@ def setup_driver():
         driver_path = ChromeDriverManager().install()
         if os.path.exists(driver_path):
             os.chmod(driver_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
-            # macOS에서만 xattr 명령어 실행 (Linux에서는 필요 없음)
-            if platform.system() == 'Darwin':  # macOS
-                try:
-                    subprocess.run(
-                        ['xattr', '-d', 'com.apple.quarantine', driver_path],
-                        stderr=subprocess.DEVNULL,
-                        check=False
-                    )
-                except (FileNotFoundError, subprocess.SubprocessError):
-                    # xattr 명령어가 없거나 실패해도 계속 진행
-                    pass
+            subprocess.run(
+                ['xattr', '-d', 'com.apple.quarantine', driver_path],
+                stderr=subprocess.DEVNULL,
+                check=False
+            )
         
         service = Service(driver_path)
         driver = webdriver.Chrome(service=service, options=options)
