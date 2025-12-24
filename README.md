@@ -10,6 +10,8 @@ Google News에서 경쟁사 관련 뉴스를 크롤링하고, LLM으로 협업 �
 - [파이프라인 흐름](#파이프라인-흐름)
 - [환경 변수 설정](#환경-변수-설정)
 - [주요 기능](#주요-기능)
+- [비동기 처리 버전](#비동기-처리-버전)
+- [GCP 배포](#gcp-배포)
 
 ## 🏗️ 시스템 구성
 
@@ -36,14 +38,45 @@ Google News에서 경쟁사 관련 뉴스를 크롤링하고, LLM으로 협업 �
 ├── README.md                          # 이 파일
 ├── requirements.txt                   # Python 패키지 의존성
 ├── run_pipeline.py                    # 전체 파이프라인 실행 스크립트 (메인)
-├── google_crawler_togooglesheet.py   # 1단계: Google News 크롤링
-├── competitor_llm.py                  # 2단계: LLM 협업 기업 분석
+├── google_crawler_togooglesheet.py   # 1단계: Google News 크롤링 (동기 버전)
+├── competitor_llm.py                  # 2단계: LLM 협업 기업 분석 (동기 버전)
 ├── dart_mapping.py                    # 3단계: DART 기업 매핑
+├── google_crawler_date_range.py      # 날짜 범위 지정 크롤링
 ├── .env                               # 환경 변수 설정 파일
-└── credentials.json                   # Google Sheets API 인증 파일
+├── credentials.json                   # Google Sheets API 인증 파일
+│
+├── 크롤링_async/                      # 비동기 처리 버전 (성능 개선)
+│   ├── README.md                      # 비동기 버전 상세 설명
+│   ├── run_pipeline.py                # 비동기 파이프라인 실행
+│   ├── google_crawler_togooglesheet.py  # 비동기 크롤링
+│   ├── competitor_llm.py             # 비동기 LLM 분석 (레이트 리미팅 포함)
+│   ├── dart_mapping.py                # DART 매핑 (동일)
+│   └── requirements.txt               # 비동기 버전 패키지
+│
+├── gcp_deploy/                        # GCP Cloud Run Jobs 배포 (동기 버전)
+│   ├── Dockerfile
+│   ├── deploy.sh
+│   ├── main.py
+│   └── ...
+│
+└── gcp_deploy_async/                  # GCP Cloud Run Jobs 배포 (비동기 버전)
+    ├── Dockerfile
+    ├── deploy.sh
+    ├── main.py
+    └── ...
 ```
 
 ## 🚀 실행 방법
+
+### 버전 선택
+
+이 프로젝트는 **동기 버전**과 **비동기 버전** 두 가지를 제공합니다:
+
+- **동기 버전** (기본): 안정적이고 순차 처리
+- **비동기 버전** (`크롤링_async/`): 성능 최적화 (2~5배 빠름)
+
+> 💡 **비동기 버전 추천**: 대량 데이터 처리 시 비동기 버전 사용을 권장합니다.
+> 자세한 내용은 [`크롤링_async/README.md`](./크롤링_async/README.md) 참고
 
 ### 1. 사전 준비
 
@@ -100,30 +133,46 @@ DART_API_KEY=your_dart_api_key_here
 
 ### 2. 실행
 
-#### 2.1 전체 파이프라인 실행 (권장)
+#### 2.1 동기 버전 (기본)
 
 ```bash
+# 전체 파이프라인 실행
 python run_pipeline.py
+
+# 또는 개별 실행
+python google_crawler_togooglesheet.py  # 크롤링
+python competitor_llm.py                # LLM 분석
+python dart_mapping.py                 # DART 매핑
 ```
 
-이 명령어는 다음 순서로 자동 실행합니다:
-1. Google News 크롤링
-2. LLM 분석
-3. DART 매핑
-
-#### 2.2 개별 실행
-
-각 단계를 개별적으로 실행할 수도 있습니다:
+#### 2.2 비동기 버전 (성능 최적화) ⚡
 
 ```bash
-# 1단계: 크롤링만 실행
-python google_crawler_togooglesheet.py
+cd 크롤링_async
 
-# 2단계: LLM 분석만 실행
-python competitor_llm.py
+# 전체 파이프라인 실행
+python run_pipeline.py
 
-# 3단계: DART 매핑만 실행
-python dart_mapping.py
+# 또는 개별 실행
+python google_crawler_togooglesheet.py  # 비동기 크롤링
+python competitor_llm.py                # 비동기 LLM 분석 (레이트 리미팅 포함)
+python dart_mapping.py                 # DART 매핑
+```
+
+**비동기 버전 주요 특징:**
+- ⚡ **성능**: 크롤링 5배, LLM 분석 2.5배 빠름
+- 🛡️ **안정성**: RPM/TPM 레이트 리미팅으로 429 오류 방지
+- 💰 **비용 절감**: 본문 2000자 제한으로 API 비용 감소
+- 📦 **배치 저장**: 5개씩 저장하여 중간 결과 보존
+
+자세한 내용은 [`크롤링_async/README.md`](./크롤링_async/README.md) 참고
+
+#### 2.3 날짜 범위 지정 크롤링
+
+특정 날짜 범위의 기사를 크롤링하려면:
+
+```bash
+python google_crawler_date_range.py --start 2024-01-01 --end 2024-01-31
 ```
 
 ## 🔄 파이프라인 흐름
@@ -199,7 +248,7 @@ COMPETITORS = [
     "글루코핏", "파스타", "글루어트", "닥터다이어리", "눔", "다노", "필라이즈",
     "레벨스", "시그노스", "뉴트리센스", "버타", "홈핏", "달램", "파크로쉬리조트",
     "더스테이힐링파크", "청리움", "오색그린야드호텔", "깊은산속옹달샘", "GC케어",
-    "뷰핏", "레드밸런스", "SNPE", "헬스맥스"
+    "뷰핏", "레드밸런스", "SNPE", "헬스맥스" , "애니핏플러스"
 ]
 
 KEYWORDS = ["도입", "협약", "협업", "제휴"]
@@ -207,12 +256,30 @@ KEYWORDS = ["도입", "협약", "협업", "제휴"]
 
 ### LLM 분석 설정
 
-`competitor_llm.py` 파일에서 직접 수정:
+#### 동기 버전 (`competitor_llm.py`)
 
 ```python
 ARTICLES_PER_CALL = 5  # 한 번에 처리할 기사 수
 BATCH_SLEEP_SECONDS = 30  # 배치 간 대기 시간 (초)
 COMPETITOR_SLEEP_SECONDS = 10  # 경쟁사 간 대기 시간 (초)
+```
+
+#### 비동기 버전 (`크롤링_async/competitor_llm.py`)
+
+```python
+ARTICLES_PER_CALL = 5  # 한 번에 처리할 기사 수
+MAX_ARTICLE_CONTENT_LENGTH = 2000  # 본문 최대 길이 (문자, API 비용 절감)
+MAX_CONCURRENT_REQUESTS = 2  # 동시 요청 수 (세마포어)
+OPENAI_RPM = 10  # 요청/분 (레이트 리미팅)
+OPENAI_TPM = 20000  # 토큰/분 (레이트 리미팅)
+```
+
+환경 변수로도 설정 가능 (`.env` 파일):
+```env
+ARTICLES_PER_CALL=5
+MAX_ARTICLE_CONTENT_LENGTH=2000
+OPENAI_RPM=10
+OPENAI_TPM=20000
 ```
 
 ## 📊 출력 데이터 형식
@@ -277,9 +344,35 @@ COMPETITOR_SLEEP_SECONDS = 10  # 경쟁사 간 대기 시간 (초)
 - 매핑 실패한 기업은 "매핑실패기업리스트" 시트에서 확인
 - candidate_score 90 이상인 후보를 수동으로 검토
 
+## ☁️ GCP 배포
+
+이 파이프라인을 GCP Cloud Run Jobs로 배포하여 주기적으로 자동 실행할 수 있습니다.
+
+### 배포 버전
+
+- **동기 버전**: `gcp_deploy/` 폴더
+- **비동기 버전**: `gcp_deploy_async/` 폴더 (성능 최적화)
+
+### 빠른 배포
+
+```bash
+# 비동기 버전 배포 (권장)
+cd gcp_deploy_async
+./setup.sh
+./deploy.sh
+
+# 동기 버전 배포
+cd gcp_deploy
+./setup.sh
+./deploy.sh
+```
+
+자세한 배포 가이드는 [`GCP_DEPLOYMENT.md`](./GCP_DEPLOYMENT.md) 참고
+
 ## 📝 참고사항
 
 - 크롤링은 Selenium을 사용하므로 Chrome/Chromium이 필요합니다
-- LLM API 호출은 비용이 발생할 수 있습니다
-- 대량의 데이터 처리 시 시간이 오래 걸릴 수 있습니다
+- LLM API 호출은 비용이 발생할 수 있습니다 (비동기 버전은 본문 2000자 제한으로 비용 절감)
+- 대량의 데이터 처리 시 시간이 오래 걸릴 수 있습니다 (비동기 버전 사용 권장)
 - Google Sheets API 할당량 제한이 있을 수 있습니다
+- 비동기 버전은 레이트 리미팅으로 API 오류를 방지합니다
