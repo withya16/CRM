@@ -306,17 +306,47 @@ async def get_article_content_async(session, semaphore, url):
             return ""
 
 
+def normalize_url(url):
+    """URL 정규화 (http/https, trailing slash 등)"""
+    if not url:
+        return ""
+    url = url.strip()
+    # http://를 https://로 통일 (선택적)
+    # 또는 원본 유지하고 trailing slash만 제거
+    url = url.rstrip('/')
+    # 소문자로 변환 (도메인은 대소문자 구분 안 함)
+    # 하지만 경로는 대소문자 구분할 수 있으므로 원본 유지
+    return url
+
+
 def get_existing_urls(worksheet):
-    """구글 시트에서 기존 URL 목록 가져오기 (마지막 컬럼 기준)"""
+    """구글 시트에서 기존 URL 목록 가져오기 (URL 컬럼 기준)"""
     existing_urls = set()
     try:
         existing_data = worksheet.get_all_values()
-        if len(existing_data) > 1:
-            for row in existing_data[1:]:
-                if len(row) >= 1:
-                    existing_urls.add(row[-1].strip())
-    except Exception:
-        pass
+        if len(existing_data) <= 1:
+            return existing_urls
+        
+        # 헤더 찾기
+        headers = existing_data[0]
+        url_col_idx = None
+        for idx, header in enumerate(headers):
+            if header.lower() in ('url', '링크', 'link'):
+                url_col_idx = idx
+                break
+        
+        # URL 컬럼이 없으면 마지막 컬럼 사용
+        if url_col_idx is None:
+            url_col_idx = len(headers) - 1
+        
+        # 데이터 행에서 URL 추출 및 정규화
+        for row in existing_data[1:]:
+            if len(row) > url_col_idx and row[url_col_idx]:
+                url = normalize_url(row[url_col_idx])
+                if url:
+                    existing_urls.add(url)
+    except Exception as e:
+        print(f"기존 URL 가져오기 오류: {e}")
     return existing_urls
 
 
@@ -324,10 +354,11 @@ async def crawl_articles_content_async(articles, existing_urls):
     """기사 본문들을 비동기로 크롤링"""
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     
-    # 중복 제거 및 필터링
+    # 중복 제거 및 필터링 (URL 정규화 적용)
     new_articles = []
     for article in articles:
-        if article['link'] not in existing_urls:
+        normalized_url = normalize_url(article['link'])
+        if normalized_url and normalized_url not in existing_urls:
             new_articles.append(article)
     
     if not new_articles:
@@ -436,10 +467,13 @@ async def crawl_recent_news_async(
             
             for article_data in article_contents:
                 url = article_data['link']
-                if url in existing_urls:
+                normalized_url = normalize_url(url)
+                
+                if not normalized_url or normalized_url in existing_urls:
                     continue
                 
-                existing_urls.add(url)
+                # 정규화된 URL을 set에 추가 (다음 반복에서 중복 체크용)
+                existing_urls.add(normalized_url)
                 
                 try:
                     content_clean = article_data['content'].replace('\n', ' ').replace('\r', ' ')[:50000]

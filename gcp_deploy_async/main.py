@@ -90,16 +90,21 @@ def setup_environment():
         raise
     
     # 기본값 설정 (시트 이름 등)
+    # competitor_llm.py용: 입력='경쟁사 동향 분석', 출력='경쟁사 협업 기업 리스트'
     if not os.environ.get('GOOGLE_INPUT_WORKSHEET'):
         os.environ['GOOGLE_INPUT_WORKSHEET'] = '경쟁사 동향 분석'
     if not os.environ.get('GOOGLE_OUTPUT_WORKSHEET'):
         os.environ['GOOGLE_OUTPUT_WORKSHEET'] = '경쟁사 협업 기업 리스트'
     if not os.environ.get('GOOGLE_DART_OUTPUT_WORKSHEET'):
-        os.environ['GOOGLE_DART_OUTPUT_WORKSHEET'] = '경쟁사 협업 기업 리스트_with_dart'
+        os.environ['GOOGLE_DART_OUTPUT_WORKSHEET'] = '다트매핑버전'
     if not os.environ.get('GOOGLE_UNMATCHED_WORKSHEET'):
         os.environ['GOOGLE_UNMATCHED_WORKSHEET'] = '매핑실패기업리스트'
     if not os.environ.get('GOOGLE_CRAWL_WORKSHEET'):
         os.environ['GOOGLE_CRAWL_WORKSHEET'] = '경쟁사 동향 분석'
+    
+    # dart_mapping.py용: 입력='경쟁사 협업 기업 리스트' (LLM 출력)
+    # dart_mapping.py는 GOOGLE_INPUT_WORKSHEET을 사용하므로, 실행 전에 재설정 필요
+    # 하지만 run_pipeline.py에서 실행되므로, 여기서는 기본값만 설정
     
     print("환경 변수 설정 완료")
 
