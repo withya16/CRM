@@ -6,12 +6,13 @@ DART 기업 리스트와 LLM 분석 결과 매핑 스크립트
 1) DART API에서 전체 기업 목록(corpCode.xml)을 받아와 CSV로 캐시
 2) Google Sheets의 '경쟁사 협업 기업 리스트' 시트에서 데이터 로드
 3) '협력사/기관명'과 DART 기업명(corp_name)을 이름 기준으로 매핑
-4) 매핑 결과(dart_corp_name)를 Google Sheets에 업데이트
+4) 매핑 결과를 출력 시트(다트매핑버전)에 저장
 
 [요구 반영]
-- 매핑 실패 기업 리스트는 '매핑실패기업리스트' 시트에 저장
-- 출력 시트(다트매핑버전)에는 아래 3개 컬럼만 저장:
+- 입력 시트(경쟁사 협업 기업 리스트)는 절대 수정하지 않음 (읽기만)
+- 출력 시트(다트매핑버전)에는 "입력 시트 원본 컬럼들 + 3개 컬럼 추가" 형태로 append 저장:
   norm_partner_name, dart_match(TRUE/FALSE), dart_corp_name
+- 매핑 실패 기업 리스트는 '매핑실패기업리스트' 시트에 append 저장 (clear 금지)
 """
 
 import os
@@ -27,8 +28,10 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 load_dotenv()
+
 DART_API_KEY = os.getenv("DART_API_KEY")
 DART_CORP_CSV = "dart_corp_list.csv"
+
 GS_CRED_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 GS_SPREADSHEET_ID = os.getenv(
     "GOOGLE_SPREADSHEET_ID",
@@ -37,8 +40,11 @@ GS_SPREADSHEET_ID = os.getenv(
 GS_INPUT_WORKSHEET = os.getenv("GOOGLE_INPUT_WORKSHEET", "경쟁사 협업 기업 리스트")
 GS_OUTPUT_WORKSHEET = os.getenv("GOOGLE_DART_OUTPUT_WORKSHEET", "다트매핑버전")
 
-# 매핑 실패 기업 리스트는 무조건 이 시트로 저장
+# 매핑 실패 기업 리스트는 무조건 이 시트로 append 저장
 GS_UNMATCHED_WORKSHEET = "매핑실패기업리스트"
+
+# 출력에 추가할 3개 컬럼(고정)
+ADD_COLS = ["norm_partner_name", "dart_match", "dart_corp_name"]
 
 if not DART_API_KEY:
     raise ValueError("DART_API_KEY 가 .env 에 설정되어 있지 않습니다. (예: DART_API_KEY=발급받은키)")
@@ -106,8 +112,8 @@ def get_gsheet_data(spreadsheet_id, worksheet_name):
 
 def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, df):
     """
-    출력 시트에 결과를 추가 저장 (기존 데이터 유지, 새 데이터만 추가)
-    - df는 이미 '저장할 컬럼만' 가지고 있어야 함
+    출력 시트에 결과를 append 저장 (기존 데이터 유지, 새 데이터만 추가)
+    - df는 "입력시트 컬럼들 + 3개 컬럼" 형태로 이미 만들어져 있어야 함
     """
     client = get_google_client()
     spreadsheet = client.open_by_key(spreadsheet_id)
@@ -123,13 +129,16 @@ def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, d
             print(f"기존 시트 '{output_worksheet_name}' 발견")
         except Exception:
             output_worksheet = spreadsheet.add_worksheet(
-                title=output_worksheet_name, rows=len(df) + 100, cols=len(df.columns) + 10
+                title=output_worksheet_name,
+                rows=len(df) + 100,
+                cols=len(df.columns) + 10
             )
             print(f"새 시트 '{output_worksheet_name}' 생성 완료")
 
         output_headers = list(df.columns)
 
-        # 헤더가 없으면 추가 (새 시트이거나 빈 시트인 경우)
+        # 헤더 처리
+        existing_output_headers = []
         try:
             existing_output_headers = output_worksheet.row_values(1)
         except Exception:
@@ -137,6 +146,12 @@ def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, d
 
         if not existing_output_headers:
             output_worksheet.append_row(output_headers)
+        else:
+            # 헤더가 있는데 구조가 달라졌으면 1행 헤더를 갱신(데이터는 유지)
+            if existing_output_headers != output_headers:
+                print("주의: 출력 시트 헤더가 현재 df 헤더와 달라서, 1행 헤더를 갱신합니다.")
+                output_worksheet.resize(rows=output_worksheet.row_count, cols=len(output_headers))
+                output_worksheet.update("A1", [output_headers])
 
         # 데이터를 배치로 추가 (한 번에 최대 500행씩)
         batch_size = 500
@@ -163,16 +178,17 @@ def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, d
 
 
 def save_unmatched_to_sheets(spreadsheet_id, worksheet_name, unmatched_df, candidates_df):
-    """매핑 실패 기업 리스트를 Google Sheets에 저장"""
+    """매핑 실패 기업 리스트를 Google Sheets에 'append'로 저장 (clear 없음)"""
     client = get_google_client()
     spreadsheet = client.open_by_key(spreadsheet_id)
 
+    # 시트 없으면 생성, 있으면 그대로 사용
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
-        worksheet.clear()
     except Exception:
         worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=10)
 
+    # 저장할 데이터 구성
     if candidates_df is not None and not candidates_df.empty:
         merged = unmatched_df.merge(candidates_df, on="협력사/기관명", how="left")
         output_cols = ["협력사/기관명", "dart_candidate_name", "dart_candidate_code", "candidate_score"]
@@ -180,8 +196,17 @@ def save_unmatched_to_sheets(spreadsheet_id, worksheet_name, unmatched_df, candi
         merged = unmatched_df
         output_cols = ["협력사/기관명"]
 
-    worksheet.append_row(output_cols)
+    # 헤더가 아예 없으면 1회만 추가 (append 모드 유지)
+    existing_headers = []
+    try:
+        existing_headers = worksheet.row_values(1)
+    except Exception:
+        existing_headers = []
 
+    if not existing_headers:
+        worksheet.append_row(output_cols)
+
+    # 데이터 append
     batch_size = 500
     rows_to_add = []
     for _, row in merged.iterrows():
@@ -230,14 +255,14 @@ def build_fuzzy_candidates_for_unmatched(unmatched_names: pd.Series, dart_df: pd
 
 def main():
     """
-    LLM 분석 결과의 협력사명을 DART 기업 리스트와 매핑하여 DART 정보 추가
+    입력 시트의 협력사명을 DART 기업 리스트와 매핑하여
+    출력 시트(다트매핑버전)에 "입력시트 컬럼 + 3개 컬럼" 형태로 append 저장
     """
-    # 실행 시점에 환경 변수 다시 읽기 (run_pipeline.py에서 설정한 값 반영)
     input_worksheet = os.getenv("GOOGLE_INPUT_WORKSHEET", GS_INPUT_WORKSHEET)
     output_worksheet = os.getenv("GOOGLE_DART_OUTPUT_WORKSHEET", GS_OUTPUT_WORKSHEET)
     unmatched_worksheet = GS_UNMATCHED_WORKSHEET
 
-    # dart_mapping.py는 항상 LLM 분석 결과('경쟁사 협업 기업 리스트')를 입력으로 받음
+    # dart_mapping.py는 항상 이 시트를 입력으로 받음
     if input_worksheet == "경쟁사 동향 분석":
         input_worksheet = "경쟁사 협업 기업 리스트"
         print("주의: 입력 시트를 '경쟁사 동향 분석'에서 '경쟁사 협업 기업 리스트'로 자동 변경했습니다.")
@@ -265,14 +290,17 @@ def main():
             break
 
     if partner_col is None:
-        print("\n오류: 입력 데이터에 협력사/기관명 컬럼이 없습니다.")
-        print(f"현재 컬럼: {list(df.columns)}")
         raise ValueError(f"입력 데이터에 협력사/기관명 컬럼이 없습니다. 현재 컬럼: {list(df.columns)}")
 
     if partner_col != "협력사/기관명":
         print(f"컬럼 이름 '{partner_col}'을 '협력사/기관명'으로 매핑합니다.")
         df = df.rename(columns={partner_col: "협력사/기관명"})
 
+    # ✅ 출력시트에 "원래 입력시트 + 3개 컬럼"이 되도록,
+    #    입력 원본 컬럼들을 먼저 확정(추가 컬럼 제외)
+    base_cols = [c for c in df.columns if c not in ADD_COLS]
+
+    # 새로 추가되는 컬럼
     df["norm_partner_name"] = df["협력사/기관명"].apply(normalize_name)
 
     print("\n--- 3. DART 매핑 진행 ---")
@@ -291,28 +319,27 @@ def main():
         how="left",
     )
 
-    # ✅ bool로 매칭 판단
-    merged["dart_match"] = merged["dart_corp_name"].notna()
+    merged["dart_match_bool"] = merged["dart_corp_name"].notna()
 
-    # 매칭된 경우 협력사/기관명을 DART 공식 명칭으로 변경
-    merged.loc[merged["dart_match"], "협력사/기관명"] = merged.loc[merged["dart_match"], "dart_corp_name"]
+    # 매칭된 경우 협력사/기관명을 DART 공식 명칭으로 변경 (기존 동작 유지)
+    merged.loc[merged["dart_match_bool"], "협력사/기관명"] = merged.loc[merged["dart_match_bool"], "dart_corp_name"]
 
-    # 결측치 처리(시트에서 빈칸)
+    # 결측치 처리
     merged["dart_corp_name"] = merged["dart_corp_name"].fillna("")
 
-    matched_count = int(merged["dart_match"].sum())
+    matched_count = int(merged["dart_match_bool"].sum())
     print(f"DART 매핑 완료: {matched_count}개 매칭 성공 / {len(merged)}개 전체")
 
-    # unmatched 계산은 bool일 때 해야 함
-    unmatched = merged[~merged["dart_match"]].copy()
+    unmatched = merged[~merged["dart_match_bool"]].copy()
 
     # 저장용 TRUE/FALSE 문자열 변환
-    merged["dart_match"] = merged["dart_match"].map({True: "TRUE", False: "FALSE"})
+    merged["dart_match"] = merged["dart_match_bool"].map({True: "TRUE", False: "FALSE"})
 
-    # 출력 시트에는 3개 컬럼만 저장
-    merged_to_save = merged[["norm_partner_name", "dart_match", "dart_corp_name"]].copy()
+    # ✅ 출력 시트 저장: 입력시트 원본 컬럼 + 3개 컬럼
+    output_cols = base_cols + ADD_COLS
+    merged_to_save = merged[output_cols].copy()
 
-    print("\n--- 4. Google Sheets에 결과 저장 ---")
+    print("\n--- 4. Google Sheets에 결과 저장(출력 시트 append) ---")
     save_count = save_to_new_sheet_with_dart_mapping(GS_SPREADSHEET_ID, output_worksheet, merged_to_save)
     print(f"시트 '{output_worksheet}' 저장 완료: {save_count}개 행")
 
@@ -326,11 +353,11 @@ def main():
         )
 
         unmatched_df = pd.DataFrame({"협력사/기관명": unmatched_partners})
-        print(f"\ndart_match=False 인 협력사 {len(unmatched_df)}개 발견")
+        print(f"\ndart_match=FALSE 인 협력사 {len(unmatched_df)}개 발견")
 
         candidates_df = build_fuzzy_candidates_for_unmatched(unmatched_partners, dart_df)
 
-        print("\n--- 5. 매핑 실패 기업 리스트를 Google Sheets에 저장 ---")
+        print("\n--- 5. 매핑 실패 기업 리스트를 Google Sheets에 append 저장 ---")
         save_count = save_unmatched_to_sheets(GS_SPREADSHEET_ID, unmatched_worksheet, unmatched_df, candidates_df)
         print(f"매핑 실패 기업 리스트 저장 완료: {save_count}개 (시트: {unmatched_worksheet})")
         print("candidate_score 90 이상인 항목을 수동으로 확인하세요.")
