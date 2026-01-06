@@ -90,21 +90,22 @@ def setup_environment():
         raise
     
     # 기본값 설정 (시트 이름 등)
-    # competitor_llm.py용: 입력='경쟁사 동향 분석', 출력='경쟁사 협업 기업 리스트'
+    # 참고: 각 파일(google_crawler_togooglesheet.py, competitor_llm.py, dart_mapping.py)에서
+    # 시트 이름을 파일 상단에서 직접 설정하므로, 여기서는 환경 변수가 설정되지 않은 경우에만 기본값 사용
+    # 
+    # 크롤링: google_crawler_togooglesheet.py의 GOOGLE_SHEET_NAME = "[크롤링] 경쟁사 기사 수집"
+    # LLM 분석: competitor_llm.py의 GS_INPUT_WORKSHEET = "[크롤링] 경쟁사 기사 수집", 
+    #           GS_OUTPUT_WORKSHEET = "[LLM] 경쟁사 협업 기업 분석"
+    # DART 매핑: dart_mapping.py의 GS_INPUT_WORKSHEET = "[LLM] 경쟁사 협업 기업 분석",
+    #            GS_OUTPUT_WORKSHEET = "[DART] 기업명 맵핑"
     if not os.environ.get('GOOGLE_INPUT_WORKSHEET'):
-        os.environ['GOOGLE_INPUT_WORKSHEET'] = '경쟁사 동향 분석'
+        os.environ['GOOGLE_INPUT_WORKSHEET'] = '[크롤링] 경쟁사 기사 수집'
     if not os.environ.get('GOOGLE_OUTPUT_WORKSHEET'):
-        os.environ['GOOGLE_OUTPUT_WORKSHEET'] = '경쟁사 협업 기업 리스트'
+        os.environ['GOOGLE_OUTPUT_WORKSHEET'] = '[LLM] 경쟁사 협업 기업 분석'
     if not os.environ.get('GOOGLE_DART_OUTPUT_WORKSHEET'):
-        os.environ['GOOGLE_DART_OUTPUT_WORKSHEET'] = '다트매핑버전'
-    if not os.environ.get('GOOGLE_UNMATCHED_WORKSHEET'):
-        os.environ['GOOGLE_UNMATCHED_WORKSHEET'] = '매핑실패기업리스트'
+        os.environ['GOOGLE_DART_OUTPUT_WORKSHEET'] = '[DART] 기업명 맵핑'
     if not os.environ.get('GOOGLE_CRAWL_WORKSHEET'):
-        os.environ['GOOGLE_CRAWL_WORKSHEET'] = '경쟁사 동향 분석'
-    
-    # dart_mapping.py용: 입력='경쟁사 협업 기업 리스트' (LLM 출력)
-    # dart_mapping.py는 GOOGLE_INPUT_WORKSHEET을 사용하므로, 실행 전에 재설정 필요
-    # 하지만 run_pipeline.py에서 실행되므로, 여기서는 기본값만 설정
+        os.environ['GOOGLE_CRAWL_WORKSHEET'] = '[크롤링] 경쟁사 기사 수집'
     
     print("환경 변수 설정 완료")
 
