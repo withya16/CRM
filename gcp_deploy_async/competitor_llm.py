@@ -15,9 +15,15 @@
 - RPM(요청/분), TPM(토큰/분) 슬라이딩 윈도우 리미터 도입
 - 429 응답의 Retry-After 헤더가 있으면 그 값을 우선 사용
 - 없으면 지수 백오프 + 랜덤 지터로 재시도
-- 배치 작업을 한꺼번에 gather로 “태스크 폭발”시키지 않고,
+- 배치 작업을 한꺼번에 gather로 "태스크 폭발"시키지 않고,
   in-flight 제한(작업 큐처럼)으로 점진적으로 실행
 """
+
+# ============================================================================
+# 시트 이름 설정 (필요시 여기서 수정)
+# ============================================================================
+GS_INPUT_WORKSHEET = "[크롤링] 경쟁사 기사 수집"
+GS_OUTPUT_WORKSHEET = "[LLM] 경쟁사 협업 기업 분석"
 
 import pandas as pd
 import json
@@ -58,8 +64,7 @@ API_KEY = os.getenv('OPENAI_API_KEY')
 API_ENDPOINT = os.getenv('OPENAI_API_ENDPOINT', 'https://api.openai.com/v1/chat/completions')
 GS_CRED_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
 GS_SPREADSHEET_ID = os.getenv('GOOGLE_SPREADSHEET_ID', '1oYJqCNpGAPBwocvM_yjgXqLBUR07h9_GoiGcAFYQsF8')
-GS_INPUT_WORKSHEET = os.getenv('GOOGLE_INPUT_WORKSHEET', '경쟁사 동향 분석')
-GS_OUTPUT_WORKSHEET = os.getenv('GOOGLE_OUTPUT_WORKSHEET', '경쟁사 협업 기업 리스트')
+# 시트 이름은 파일 상단에서 설정됨 (GS_INPUT_WORKSHEET, GS_OUTPUT_WORKSHEET)
 
 # LLM 분석 설정
 ARTICLES_PER_CALL = 5
@@ -671,14 +676,14 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
                     original_competitor = str(orig_row.get('경쟁사', competitor)).strip()
                     break
             
-            # 사업명 처리: business_name이 있으면 우선 사용, LLM이 반환한 사업명과 다르면 business_name으로 덮어쓰기
+            # 사업명 처리: business_name이 있으면 무조건 사용 (특히 콤마로 구분된 여러 사업명의 경우)
             llm_business_name = str(row.get("사업명", "")).strip()
-            final_business_name = business_name if business_name else llm_business_name
             
-            # business_name이 콤마로 구분된 여러 사업명인 경우, LLM이 잘못 파싱했을 수 있으므로 강제로 business_name 사용
-            if business_name and business_name != llm_business_name:
-                # LLM이 사업명을 잘못 반환했을 수 있으므로 business_name 사용
+            # business_name이 정의되어 있으면 무조건 사용 (LLM 반환값 무시)
+            if business_name:
                 final_business_name = business_name
+            else:
+                final_business_name = llm_business_name
             
             batch_rows.append({
                 "사업명": final_business_name,
@@ -783,14 +788,14 @@ async def main_async():
                             accumulated_results.extend(res)
                             update_input_sheet_status(input_worksheet, row_nums, 'DONE')
                             
-                            # ✅ 5개 이상 모이면 배치 저장
+                            # 5개 이상 모이면 배치 저장
                             count, accumulated_results = save_batch_results(
                                 accumulated_results, BATCH_SAVE_SIZE, 
                                 GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET
                             )
                             total_saved_count += count
                         else:
-                            # ✅ 실패(SKIP 또는 ERROR)인 경우: status 값으로 업데이트
+                            # 실패(SKIP 또는 ERROR)인 경우: status 값으로 업데이트
                             update_input_sheet_status(input_worksheet, row_nums, status)
                 except Exception as e:
                     print(f"  [배치 태스크 오류] {e}", flush=True)

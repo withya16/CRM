@@ -345,14 +345,30 @@ def get_article_content(driver, url):
 
 
 def get_existing_urls(worksheet):
-    """구글 시트에서 기존 URL 목록 가져오기 (마지막 컬럼 기준)"""
+    """구글 시트에서 기존 URL 목록 가져오기 (URL 컬럼 기준)"""
     existing_urls = set()
     try:
         existing_data = worksheet.get_all_values()
-        if len(existing_data) > 1:
-            for row in existing_data[1:]:
-                if len(row) >= 1:
-                    existing_urls.add(row[-1].strip())
+        if len(existing_data) <= 1:
+            return existing_urls
+        
+        headers = existing_data[0]
+        # URL 컬럼 인덱스 찾기
+        url_col_idx = None
+        for idx, header in enumerate(headers):
+            if header == 'URL':
+                url_col_idx = idx
+                break
+        
+        if url_col_idx is None:
+            return existing_urls
+        
+        # URL 컬럼에서 값 가져오기
+        for row in existing_data[1:]:
+            if len(row) > url_col_idx:
+                url = row[url_col_idx].strip()
+                if url:
+                    existing_urls.add(url)
     except Exception:
         pass
     return existing_urls
@@ -509,7 +525,7 @@ def main():
     
     spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID', '1oYJqCNpGAPBwocvM_yjgXqLBUR07h9_GoiGcAFYQsF8')
     credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
-    sheet_name = os.getenv('GOOGLE_CRAWL_WORKSHEET', '시트11')
+    sheet_name = os.getenv('GOOGLE_CRAWL_WORKSHEET', '경쟁사 동향 분석')
     
     crawl_news_by_date_range(
         start_date=start_date,

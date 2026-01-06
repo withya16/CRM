@@ -4,7 +4,7 @@
 set -e
 
 # 설정 변수 (비동기 버전)
-PROJECT_ID=${GCP_PROJECT_ID:-"crmcrawling"}
+PROJECT_ID=${GCP_PROJECT_ID:-"crmcraling"}
 REGION=${GCP_REGION:-"asia-northeast3"}  # 서울 리전
 IMAGE_NAME="crawler-pipeline-async"  # 비동기 버전 이미지 이름
 IMAGE_TAG="latest"
@@ -15,8 +15,8 @@ SCHEDULER_JOB_NAME="crawler-pipeline-schedule-async"  # 비동기 버전 스케�
 # 최대 성능 설정 (한달 4회 실행 기준으로 무료 크레딧 내 최적화)
 MEMORY="16Gi"
 CPU="8"
-TIMEOUT="7200"  # 2시간 (7200초) - 필요시 10800(3시간)으로 변경 가능
-MAX_RETRIES=0
+TIMEOUT="3600"  # 최대값: 1시간 (Cloud Run Jobs 최대 타임아웃, 실제로는 제거 불가)
+MAX_RETRIES=1
 
 # 스케줄 설정 (매주 월요일 오전 9시)
 SCHEDULE="0 9 * * 1"

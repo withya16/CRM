@@ -15,9 +15,15 @@
 - RPM(요청/분), TPM(토큰/분) 슬라이딩 윈도우 리미터 도입
 - 429 응답의 Retry-After 헤더가 있으면 그 값을 우선 사용
 - 없으면 지수 백오프 + 랜덤 지터로 재시도
-- 배치 작업을 한꺼번에 gather로 “태스크 폭발”시키지 않고,
+- 배치 작업을 한꺼번에 gather로 "태스크 폭발"시키지 않고,
   in-flight 제한(작업 큐처럼)으로 점진적으로 실행
 """
+
+# ============================================================================
+# 시트 이름 설정 (필요시 여기서 수정)
+# ============================================================================
+GS_INPUT_WORKSHEET = "[크롤링] 경쟁사 기사 수집"
+GS_OUTPUT_WORKSHEET = "[LLM] 경쟁사 협업 기업 분석"
 
 import pandas as pd
 import json
@@ -58,8 +64,7 @@ API_KEY = os.getenv('OPENAI_API_KEY')
 API_ENDPOINT = os.getenv('OPENAI_API_ENDPOINT', 'https://api.openai.com/v1/chat/completions')
 GS_CRED_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
 GS_SPREADSHEET_ID = os.getenv('GOOGLE_SPREADSHEET_ID', '1oYJqCNpGAPBwocvM_yjgXqLBUR07h9_GoiGcAFYQsF8')
-GS_INPUT_WORKSHEET = os.getenv('GOOGLE_INPUT_WORKSHEET', '경쟁사 동향 분석')
-GS_OUTPUT_WORKSHEET = os.getenv('GOOGLE_OUTPUT_WORKSHEET', '경쟁사 협업 기업 리스트')
+# 시트 이름은 파일 상단에서 설정됨 (GS_INPUT_WORKSHEET, GS_OUTPUT_WORKSHEET)
 
 # LLM 분석 설정
 ARTICLES_PER_CALL = 5
@@ -507,7 +512,7 @@ def update_input_sheet_status(worksheet, row_numbers, status_value):
         if status_col_idx is None:
             # 헤더에 status 추가
             col_letter = get_column_letter(len(headers) + 1)
-            worksheet.update(f'{col_letter}1', [['status']])
+            worksheet.update(f'{col_letter}1', 'status')
             status_col_idx = len(headers)
         
         # 각 행의 status 업데이트 (배치 업데이트)
@@ -636,31 +641,38 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
             matched_url = ""
             original_title_for_date = ""  # 날짜 추출용 원본 제목
 
+            # 원본 제목에서 매칭 찾기
             for _, orig_row in batch_df.iterrows():
                 orig_title = str(orig_row.get('제목', '')).strip()
                 if orig_title and llm_title:
                     if llm_title in orig_title or orig_title in llm_title:
-                        matched_title = orig_title
                         original_title_for_date = orig_title  # 원본 제목 저장 (날짜 포함)
                         if url_col:
                             matched_url = str(orig_row.get(url_col, '')).strip()
                         break
                     elif len(llm_title) > 10 and len(orig_title) > 10:
                         if llm_title[:30] in orig_title or orig_title[:30] in llm_title:
-                            matched_title = orig_title
                             original_title_for_date = orig_title  # 원본 제목 저장 (날짜 포함)
                             if url_col:
                                 matched_url = str(orig_row.get(url_col, '')).strip()
                             break
 
-            if not matched_title:
-                matched_title = llm_title
+            # 매칭된 원본 제목이 없으면 LLM 제목 사용 (하지만 날짜는 없을 수 있음)
+            if not original_title_for_date:
                 original_title_for_date = llm_title
 
             # 원본 제목에서 날짜 추출 (원본 제목에 날짜가 포함되어 있음)
-            date_str, clean_title = extract_date_from_title(original_title_for_date)
-            # matched_title도 날짜 제거된 버전으로 업데이트
-            matched_title = clean_title
+            if original_title_for_date:
+                date_str, clean_title = extract_date_from_title(original_title_for_date)
+                # matched_title 설정: 날짜가 제거된 제목 사용
+                if clean_title:
+                    matched_title = clean_title
+                else:
+                    matched_title = original_title_for_date
+            else:
+                # 원본 제목을 찾지 못한 경우 LLM 제목에서 날짜 추출 시도
+                date_str, clean_title = extract_date_from_title(llm_title)
+                matched_title = clean_title if clean_title else llm_title
 
             # 배치 내 원본 행에서 경쟁사 정보 가져오기
             original_competitor = competitor  # 기본값은 배치의 경쟁사
@@ -671,14 +683,14 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
                     original_competitor = str(orig_row.get('경쟁사', competitor)).strip()
                     break
             
-            # 사업명 처리: business_name이 있으면 우선 사용, LLM이 반환한 사업명과 다르면 business_name으로 덮어쓰기
+            # 사업명 처리: business_name이 있으면 무조건 사용 (특히 콤마로 구분된 여러 사업명의 경우)
             llm_business_name = str(row.get("사업명", "")).strip()
-            final_business_name = business_name if business_name else llm_business_name
             
-            # business_name이 콤마로 구분된 여러 사업명인 경우, LLM이 잘못 파싱했을 수 있으므로 강제로 business_name 사용
-            if business_name and business_name != llm_business_name:
-                # LLM이 사업명을 잘못 반환했을 수 있으므로 business_name 사용
+            # business_name이 정의되어 있으면 무조건 사용 (LLM 반환값 무시)
+            if business_name:
                 final_business_name = business_name
+            else:
+                final_business_name = llm_business_name
             
             batch_rows.append({
                 "사업명": final_business_name,

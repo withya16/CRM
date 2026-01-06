@@ -13,6 +13,11 @@
 - 구글 검색은 순차 처리 유지
 """
 
+# ============================================================================
+# 시트 이름 설정 (필요시 여기서 수정)
+# ============================================================================
+GOOGLE_SHEET_NAME = "[크롤링] 경쟁사 기사 수집"
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -400,7 +405,7 @@ async def crawl_articles_content_async(articles, existing_urls):
 async def crawl_recent_news_async(
     spreadsheet_id,
     credentials_file='credentials.json',
-    sheet_name='시트7'
+    sheet_name=None
 ):
     """최신 기사만 크롤링하여 구글 시트에 추가 (비동기 버전)"""
     if not SHEETS_AVAILABLE:
@@ -410,6 +415,10 @@ async def crawl_recent_news_async(
     if not os.path.exists(credentials_file):
         print(f"오류: {credentials_file} 파일이 없습니다.")
         return False
+    
+    # 시트 이름이 지정되지 않으면 기본값 사용
+    if sheet_name is None:
+        sheet_name = GOOGLE_SHEET_NAME
     
     try:
         creds = Credentials.from_service_account_file(
@@ -501,9 +510,11 @@ async def crawl_recent_news_async(
 def crawl_recent_news(
     spreadsheet_id,
     credentials_file='credentials.json',
-    sheet_name='경쟁사 동향 분석'
+    sheet_name=None
 ):
     """동기 래퍼 함수"""
+    if sheet_name is None:
+        sheet_name = GOOGLE_SHEET_NAME
     return asyncio.run(crawl_recent_news_async(spreadsheet_id, credentials_file, sheet_name))
 
 
@@ -511,13 +522,12 @@ def main():
     """메인 실행 함수"""
     spreadsheet_id = os.getenv('GOOGLE_SPREADSHEET_ID', '1oYJqCNpGAPBwocvM_yjgXqLBUR07h9_GoiGcAFYQsF8')
     credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
-    sheet_name = os.getenv('GOOGLE_CRAWL_WORKSHEET', '경쟁사 동향 분석')
     
     if not spreadsheet_id:
         print("오류: GOOGLE_SPREADSHEET_ID를 .env 파일에 설정해주세요.")
         return
     
-    crawl_recent_news(spreadsheet_id, credentials_file, sheet_name)
+    crawl_recent_news(spreadsheet_id, credentials_file, GOOGLE_SHEET_NAME)
 
 
 if __name__ == "__main__":
