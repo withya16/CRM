@@ -311,6 +311,16 @@ def make_prompt(competitor, data_json, business_name=None):
         business_text = "대웅그룹과 연관된 경쟁사입니다."
         business_hint = "사업명이 명확하지 않은 경우, '사업명' 컬럼은 비워 두거나 기사 맥락상 자연스러운 이름을 사용하세요."
 
+    # 특정 경쟁사에 대한 제약사항
+    exclusion_rules = ""
+    if competitor == "파스타":
+        exclusion_rules = """
+**중요 제약사항:**
+- 파스타는 카카오헬스케어의 서비스/제품입니다.
+- 따라서 파스타의 협력사/기관명에 **"카카오헬스케어"** 또는 **"카카오"**가 포함되면 안 됩니다.
+- 이는 모회사-자회사 관계이지 협력 관계가 아닙니다.
+"""
+
     prompt = f"""
 당신은 **대웅그룹의 경쟁사 동향 분석 전문가**입니다.
 
@@ -326,7 +336,11 @@ def make_prompt(competitor, data_json, business_name=None):
 1. **기사 본문에 실제로 등장하는 정보만 사용**
 2. **'{competitor}'와의 직접적인 관계만 파트너십으로 인정**
 3. **대웅 사업 관점 우선**
-
+4. **후원, 투자는 협력사로 인정하지 않음**
+   - 후원 관계는 협력사가 아닙니다
+   - 투자 관계도 협력사가 아닙니다
+   - 실제 비즈니스 협력(제휴, 협약, 공동 개발, 공급 계약 등)만 협력사로 인정
+{exclusion_rules}
 [분석용 기사 데이터(JSON)]
 {data_json}
 
@@ -335,6 +349,11 @@ def make_prompt(competitor, data_json, business_name=None):
 
 - 사업명: {business_hint}
 - 경쟁사: '{competitor}' 그대로
+- 협력사/기관명: 
+  * 후원, 투자 관계는 제외
+  * '{competitor}'와 실제 비즈니스 협력을 하는 기업/기관만 포함
+  * 모회사, 자회사 관계는 제외
+- 협력 유형: 구체적인 협력 형태를 명시 (예: 제휴, 협약, 공동 개발, 공급 계약, 서비스 연계 등)
 - 근거 기사 URL: JSON에 있으면 그대로, 없으면 빈 칸
 """
     return prompt
