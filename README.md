@@ -116,13 +116,6 @@ pip install -r requirements.txt
 GOOGLE_SPREADSHEET_ID=your_spreadsheet_id_here
 GOOGLE_CREDENTIALS_FILE=credentials.json
 
-# Google Sheets 시트 이름
-GOOGLE_CRAWL_WORKSHEET=경쟁사 동향 분석
-GOOGLE_INPUT_WORKSHEET=경쟁사 동향 분석
-GOOGLE_OUTPUT_WORKSHEET=경쟁사 협업 기업 리스트
-GOOGLE_DART_OUTPUT_WORKSHEET=경쟁사 협업 기업 리스트_with_dart
-GOOGLE_UNMATCHED_WORKSHEET=매핑실패기업리스트
-
 # OpenAI API 설정
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_API_ENDPOINT=https://api.openai.com/v1/chat/completions
@@ -130,6 +123,11 @@ OPENAI_API_ENDPOINT=https://api.openai.com/v1/chat/completions
 # DART API 설정
 DART_API_KEY=your_dart_api_key_here
 ```
+
+> **참고**: 시트 이름은 각 파일 상단에서 직접 설정합니다. `.env` 파일에서 설정하지 않습니다.
+> - 크롤링: `google_crawler_togooglesheet.py` 상단의 `GOOGLE_SHEET_NAME`
+> - LLM 분석: `competitor_llm.py` 상단의 `GS_INPUT_WORKSHEET`, `GS_OUTPUT_WORKSHEET`
+> - DART 매핑: `dart_mapping.py` 상단의 `GS_INPUT_WORKSHEET`, `GS_OUTPUT_WORKSHEET`
 
 ### 2. 실행
 
@@ -183,25 +181,24 @@ python google_crawler_date_range.py --start 2024-01-01 --end 2024-01-31
 │    - 경쟁사별 + 키워드 조합으로 검색                          │
 │    - 최근 1주일 기사만 수집                                   │
 │    - URL 중복 체크 (기존 기사 제외)                           │
-│    → Google Sheets: "경쟁사 동향 분석" 시트에 저장           │
+│    - 수집날짜 자동 기록                                       │
+│    → Google Sheets: "[크롤링] 경쟁사 기사 수집" 시트에 저장   │
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 2. LLM 분석                                                  │
-│    - "경쟁사 동향 분석" 시트에서 데이터 읽기                  │
+│    - "[크롤링] 경쟁사 기사 수집" 시트에서 데이터 읽기          │
 │    - 이미 처리된 기사 제외 (URL 기준)                         │
 │    - OpenAI API로 협업 기업 추출                              │
-│    → Google Sheets: "경쟁사 협업 기업 리스트" 시트에 저장     │
+│    → Google Sheets: "[LLM] 경쟁사 협업 기업 분석" 시트에 저장  │
 └─────────────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────────────┐
 │ 3. DART 매핑                                                 │
-│    - "경쟁사 협업 기업 리스트" 시트에서 데이터 읽기            │
+│    - "[LLM] 경쟁사 협업 기업 분석" 시트에서 데이터 읽기        │
 │    - 이미 처리된 기사 제외 (제목+URL 기준)                    │
 │    - DART API로 기업 코드 매핑                                │
-│    - Fuzzy 매칭으로 유사 기업 후보 추천                       │
-│    → Google Sheets: "경쟁사 협업 기업 리스트_with_dart" 시트에 저장 │
-│    → 매핑 실패 기업: "매핑실패기업리스트" 시트에 저장         │
+│    → Google Sheets: "[DART] 기업명 맵핑" 시트에 저장          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -218,13 +215,15 @@ python google_crawler_date_range.py --start 2024-01-01 --end 2024-01-31
 
 ### 시트 이름 설정
 
-| 변수명 | 설명 | 기본값 |
-|--------|------|--------|
-| `GOOGLE_CRAWL_WORKSHEET` | 크롤링 결과 저장 시트 | `경쟁사 동향 분석` |
-| `GOOGLE_INPUT_WORKSHEET` | LLM 분석 입력 시트 | `경쟁사 동향 분석` |
-| `GOOGLE_OUTPUT_WORKSHEET` | LLM 분석 출력 시트 | `경쟁사 협업 기업 리스트` |
-| `GOOGLE_DART_OUTPUT_WORKSHEET` | DART 매핑 출력 시트 | `경쟁사 협업 기업 리스트_with_dart` |
-| `GOOGLE_UNMATCHED_WORKSHEET` | 매핑 실패 기업 시트 | `매핑실패기업리스트` |
+시트 이름은 각 파일의 상단에서 직접 설정합니다:
+
+| 파일 | 변수명 | 기본값 |
+|------|--------|--------|
+| `google_crawler_togooglesheet.py` | `GOOGLE_SHEET_NAME` | `[크롤링] 경쟁사 기사 수집` |
+| `competitor_llm.py` | `GS_INPUT_WORKSHEET` | `[크롤링] 경쟁사 기사 수집` |
+| `competitor_llm.py` | `GS_OUTPUT_WORKSHEET` | `[LLM] 경쟁사 협업 기업 분석` |
+| `dart_mapping.py` | `GS_INPUT_WORKSHEET` | `[LLM] 경쟁사 협업 기업 분석` |
+| `dart_mapping.py` | `GS_OUTPUT_WORKSHEET` | `[DART] 기업명 맵핑` |
 
 ## 🎯 주요 기능
 
@@ -284,7 +283,7 @@ OPENAI_TPM=20000
 
 ## 📊 출력 데이터 형식
 
-### 경쟁사 동향 분석 (크롤링 결과)
+### [크롤링] 경쟁사 기사 수집 (크롤링 결과)
 
 | 컬럼명 | 설명 |
 |--------|------|
@@ -293,20 +292,22 @@ OPENAI_TPM=20000
 | 제목 | 기사 제목 |
 | 본문 | 기사 본문 |
 | URL | 기사 URL |
+| status | 처리 상태 (LLM 분석 완료 여부) |
+| 수집날짜 | 크롤링 수집 날짜 (YY.MM.DD 형식) |
 
-### 경쟁사 협업 기업 리스트 (LLM 분석 결과)
+### [LLM] 경쟁사 협업 기업 분석 (LLM 분석 결과)
 
 | 컬럼명 | 설명 |
 |--------|------|
 | 사업명 | 대웅그룹 사업명 |
 | 경쟁사 | 경쟁사 이름 |
 | 협력사/기관명 | 협업하는 기업/기관명 |
-| 협력 유형 | 협업 형태 (예: EAP 도입, 공동 연구 등) |
+| 협력 유형 | 협업 형태 (예: 제휴, 협약, 공동 개발 등) |
 | 근거 기사 제목 | 해당 협업이 언급된 기사 제목 |
 | 근거 기사 URL | 기사 URL |
 | 기사 날짜 | 기사 발행일 (YY.MM.DD 형식) |
 
-### 경쟁사 협업 기업 리스트_with_dart (DART 매핑 결과)
+### [DART] 기업명 맵핑 (DART 매핑 결과)
 
 위 컬럼에 추가로:
 
@@ -315,15 +316,6 @@ OPENAI_TPM=20000
 | norm_partner_name | 정규화된 협력사명 (공백 제거, 대문자) |
 | dart_match | DART 매핑 성공 여부 (True/False) |
 | dart_corp_name | DART 공식 기업명 (매핑 성공 시) |
-
-### 매핑실패기업리스트
-
-| 컬럼명 | 설명 |
-|--------|------|
-| 협력사/기관명 | 매핑 실패한 협력사명 |
-| dart_candidate_name | Fuzzy 매칭 추천 기업명 |
-| dart_candidate_code | 추천 기업의 DART 코드 |
-| candidate_score | 매칭 점수 (90 이상 권장) |
 
 ## 🔧 문제 해결
 
@@ -341,8 +333,7 @@ OPENAI_TPM=20000
 ### DART 매핑이 안 되는 경우
 
 - DART API 키 확인
-- 매핑 실패한 기업은 "매핑실패기업리스트" 시트에서 확인
-- candidate_score 90 이상인 후보를 수동으로 검토
+- 매핑 실패한 기업은 `dart_match=False`로 표시됨
 
 ## ☁️ GCP 배포
 

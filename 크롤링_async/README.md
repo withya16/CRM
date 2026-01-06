@@ -3,13 +3,26 @@
 이 폴더는 기존 크롤링 코드의 **비동기 처리 버전**입니다. 
 I/O 대기 시간을 활용하여 성능을 개선하되, 차단 방지를 위한 안전장치가 포함되어 있습니다.
 
+## 시트 이름 설정
+
+각 파일의 상단에서 시트 이름을 직접 설정할 수 있습니다:
+
+- **크롤링 결과 시트**: `google_crawler_togooglesheet.py` 상단의 `GOOGLE_SHEET_NAME`
+- **LLM 분석 입력/출력 시트**: `competitor_llm.py` 상단의 `GS_INPUT_WORKSHEET`, `GS_OUTPUT_WORKSHEET`
+- **DART 매핑 입력/출력 시트**: `dart_mapping.py` 상단의 `GS_INPUT_WORKSHEET`, `GS_OUTPUT_WORKSHEET`
+
+**기본 시트 이름:**
+- `[크롤링] 경쟁사 기사 수집` - 크롤링 결과 저장
+- `[LLM] 경쟁사 협업 기업 분석` - LLM 분석 결과 저장
+- `[DART] 기업명 맵핑` - DART 매핑 결과 저장
+
 ## 주요 변경사항
 
 ### 1. `competitor_llm.py` - LLM API 호출 비동기 처리
 - **변경**: `aiohttp`를 사용하여 LLM API 호출을 비동기로 처리
 - **성능**: 여러 배치의 LLM 호출을 동시에 처리하여 전체 실행 시간 단축
 - **차단 방지**:
-  - `Semaphore(MAX_CONCURRENT_REQUESTS=3)`로 동시 요청 수 제한
+  - `Semaphore(MAX_CONCURRENT_REQUESTS=2)`로 동시 요청 수 제한
   - 각 요청 사이 0.5초 딜레이 유지
   - 429 에러 시 지수 백오프 재시도
 
@@ -20,6 +33,9 @@ I/O 대기 시간을 활용하여 성능을 개선하되, 차단 방지를 위�
   - `Semaphore(MAX_CONCURRENT_REQUESTS=5)`로 동시 요청 수 제한
   - 각 요청 사이 0.3초 딜레이 유지
   - 구글 검색 결과 추출은 Selenium으로 순차 처리 유지 (차단 방지)
+- **추가 기능**:
+  - 크롤링 날짜 자동 기록: status 컬럼 옆에 "수집날짜" 컬럼 자동 추가
+  - URL 컬럼 기준 중복 체크: 기존 URL 목록을 URL 컬럼명으로 확인
 
 ### 3. `dart_mapping.py`
 - **변경 없음**: 비동기 처리 필요 없음 (DART API 호출이 적음)
@@ -45,14 +61,14 @@ python run_pipeline.py
 - **비동기 처리 (5개 동시)**: 약 10초 (5배 개선)
 
 - **기존 (순차 처리)**: 10개 배치 LLM 호출 시 약 5분 (배치당 30초)
-- **비동기 처리 (3개 동시)**: 약 2분 (2.5배 개선)
+- **비동기 처리 (2개 동시)**: 약 2.5분 (2배 개선)
 
 *실제 성능은 네트워크 상태, API 응답 시간에 따라 달라질 수 있습니다.*
 
 ## 차단 방지 전략
 
 ### 1. 동시 요청 수 제한
-- LLM API: 최대 3개 동시 요청
+- LLM API: 최대 2개 동시 요청
 - 기사 본문 크롤링: 최대 5개 동시 요청
 
 ### 2. 딜레이 유지
@@ -78,7 +94,7 @@ python run_pipeline.py
 
 ### `competitor_llm.py`
 ```python
-MAX_CONCURRENT_REQUESTS = 3  # 동시 요청 수 (줄이면 안전, 늘리면 빠름)
+MAX_CONCURRENT_REQUESTS = 2  # 동시 요청 수 (줄이면 안전, 늘리면 빠름)
 ```
 
 ### `google_crawler_togooglesheet.py`
@@ -90,11 +106,13 @@ MAX_CONCURRENT_REQUESTS = 5  # 동시 요청 수 (줄이면 안전, 늘리면 �
 
 | 항목 | 기존 버전 | 비동기 버전 |
 |------|----------|------------|
-| LLM API 호출 | 순차 처리 | 비동기 (3개 동시) |
+| LLM API 호출 | 순차 처리 | 비동기 (2개 동시) |
 | 기사 본문 크롤링 | 순차 처리 (Selenium) | 비동기 (aiohttp, 5개 동시) |
 | 구글 검색 결과 추출 | 순차 처리 (Selenium) | 순차 처리 (Selenium, 유지) |
 | 차단 위험 | 낮음 | 낮음 (제한된 동시성) |
 | 실행 속도 | 보통 | 빠름 (2~5배) |
+| 크롤링 날짜 기록 | 없음 | 자동 기록 |
+| LLM 분석 정확도 | 기본 | 개선 (제약사항 추가) |
 
 
 
