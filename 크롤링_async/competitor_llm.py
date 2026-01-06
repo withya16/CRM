@@ -4,7 +4,7 @@
 경쟁사 뉴스 기반 LLM 분석 스크립트 (비동기 처리 버전)
 
 1) Google Sheets에서 경쟁사 뉴스 데이터 로드
-2) 경쟁사별 기사들을 배치로 나눠 LLM 분석 → 파트너십 목록 생성
+2) 경쟁사별 기사들을 배치로 나눠 LLM 분석하여 파트너십 목록 생성
 3) 결과를 Google Sheets에 저장 (기사 제목에서 날짜 추출 포함)
 
 [이번 수정에서 해결하려는 문제]
@@ -32,7 +32,6 @@ import re
 import asyncio
 import aiohttp
 
-# ✅ 추가 import (레이트리밋/백오프)
 import random
 from collections import deque
 
@@ -75,7 +74,7 @@ if not API_KEY:
     raise ValueError("OPENAI_API_KEY가 .env 파일에 설정되지 않았습니다. .env.example을 참고하세요.")
 
 # ---------------------------
-# ✅ Rate Limit(핵심 수정)
+# Rate Limit 설정
 # ---------------------------
 # 계정/모델 제한이 다르므로 env로 쉽게 조절
 OPENAI_RPM = int(os.getenv("OPENAI_RPM", "10"))          # 요청/분(보수적으로)
@@ -83,11 +82,7 @@ OPENAI_TPM = int(os.getenv("OPENAI_TPM", "20000"))       # 토큰/분(보수적�
 OPENAI_TIMEOUT_SEC = int(os.getenv("OPENAI_TIMEOUT_SEC", "180"))  # LLM 응답 대기(초)
 
 def estimate_tokens(text: str) -> int:
-    """
-    토큰 수 러프 추정.
-    실제 토크나이저를 쓰면 정확하지만, 여기선 안전하게 'chars/3'로 넉넉히 잡음.
-    → TPM 초과를 줄이는 목적.
-    """
+    """토큰 수 러프 추정 (TPM 초과 방지를 위해 chars/3로 안전하게 추정)"""
     if not text:
         return 1
     return max(1, len(text) // 3)
@@ -149,13 +144,23 @@ def get_google_client():
     return gspread.authorize(creds)
 
 def get_gsheet_data(spreadsheet_id, worksheet_name):
-    """Google Sheets 데이터를 Pandas DataFrame으로 로드"""
+    """Google Sheets 데이터를 Pandas DataFrame으로 로드 (status 컬럼 기반 필터링)"""
     try:
         client = get_google_client()
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheet = spreadsheet.worksheet(worksheet_name)
-        df = pd.DataFrame(worksheet.get_all_records())
-
+        
+        # get_all_values()를 사용하여 실제 행 번호 추적
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return None, None
+        
+        headers = all_values[0]
+        data_rows = all_values[1:]
+        
+        # DataFrame 생성
+        df = pd.DataFrame(data_rows, columns=headers)
+        
         url_col = None
         for c in df.columns:
             lower = c.lower()
@@ -166,19 +171,47 @@ def get_gsheet_data(spreadsheet_id, worksheet_name):
         required_cols = ['경쟁사', '제목', '본문']
         if not all(col in df.columns for col in required_cols):
             print("오류: 데이터에 '경쟁사', '제목', '본문' 컬럼이 부족합니다.", flush=True)
-            return None
+            return None, None
+
+        # status 컬럼이 없으면 생성 (기본값: 빈 문자열)
+        if 'status' not in df.columns and 'Status' not in df.columns:
+            df['status'] = ''
+        else:
+            # 대소문자 구분 없이 status 컬럼 찾기
+            status_col = None
+            for col in df.columns:
+                if col.lower() == 'status':
+                    status_col = col
+                    break
+            if status_col and status_col != 'status':
+                df['status'] = df[status_col]
 
         cols = required_cols.copy()
         if url_col:
             cols.append(url_col)
-
-        df = df[cols]
+        cols.append('status')
+        
+        # 실제 시트 행 번호 매핑 (헤더 제외, 2부터 시작, 필터링 전에 추가)
+        df['_sheet_row_num'] = range(2, 2 + len(df))
+        
+        # 본문 길이 필터링
         df = df[df['본문'].astype(str).str.len() > 100].reset_index(drop=True)
-        return df
+        
+        # status 필터링: DONE과 SKIP이 아닌 것만 (ERROR, 빈 값만 처리)
+        df['status_upper'] = df['status'].astype(str).str.strip().str.upper()
+        df = df[~df['status_upper'].isin(['DONE', 'SKIP'])].reset_index(drop=True)
+        df = df.drop(columns=['status_upper'], errors='ignore')
+        
+        # 필요한 컬럼만 선택
+        df = df[cols + ['_sheet_row_num']]
+        
+        return df, worksheet
 
     except Exception as e:
         print(f"Google Sheets 로드 실패: {e}", flush=True)
-        return None
+        import traceback
+        traceback.print_exc()
+        return None, None
 
 DATE_PATTERNS = [
     re.compile(r'(\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.)(?:\s|$|[.,])'),
@@ -302,7 +335,7 @@ def make_prompt(competitor, data_json, business_name=None):
     return prompt
 
 # ---------------------------
-# ✅ LLM 호출 (핵심 수정)
+# LLM 호출
 # ---------------------------
 async def call_llm_async(session, semaphore, prompt, batch_info, max_retries=6):
     """
@@ -355,18 +388,27 @@ async def call_llm_async(session, semaphore, prompt, batch_info, max_retries=6):
                             err_json = await res.json()
                             err_code = (err_json.get("error", {}).get("code") or "")
                             if "insufficient_quota" in str(err_code).lower():
-                                print(f"  [배치 {batch_info}] 429(insufficient_quota) → 중단", flush=True)
+                                print(f"  [배치 {batch_info}] 429(insufficient_quota) - 중단", flush=True)
                                 return "API 호출 실패"
                         except Exception:
                             pass
 
-                        print(f"  [배치 {batch_info}] 429 RateLimit → {wait:.1f}s 대기 후 재시도", flush=True)
+                        print(f"  [배치 {batch_info}] 429 RateLimit - {wait:.1f}s 대기 후 재시도", flush=True)
                         await asyncio.sleep(wait)
                         continue
 
+                    if res.status == 401:
+                        # 401 Unauthorized: API 키 문제
+                        print(f"  [배치 {batch_info}] 401 Unauthorized - API 키 확인 필요", flush=True)
+                        print(f"  [배치 {batch_info}] API 키가 올바른지 확인하세요:", flush=True)
+                        print(f"  [배치 {batch_info}] - API 키가 .env 파일에 올바르게 설정되었는지", flush=True)
+                        print(f"  [배치 {batch_info}] - API 키가 만료되지 않았는지", flush=True)
+                        print(f"  [배치 {batch_info}] - API 키 형식이 올바른지 (sk-로 시작)", flush=True)
+                        return "API 호출 실패"
+
                     if 500 <= res.status < 600:
                         wait = min(60.0, 2.0 ** attempt) + random.uniform(0.0, 1.5)
-                        print(f"  [배치 {batch_info}] 서버 오류 {res.status} → {wait:.1f}s 후 재시도", flush=True)
+                        print(f"  [배치 {batch_info}] 서버 오류 {res.status} - {wait:.1f}s 후 재시도", flush=True)
                         await asyncio.sleep(wait)
                         continue
 
@@ -377,24 +419,28 @@ async def call_llm_async(session, semaphore, prompt, batch_info, max_retries=6):
 
             except asyncio.TimeoutError:
                 wait = min(60.0, 2.0 ** attempt) + random.uniform(0.0, 1.5)
-                print(f"  [배치 {batch_info}] 타임아웃 → {wait:.1f}s 후 재시도", flush=True)
+                print(f"  [배치 {batch_info}] 타임아웃 - {wait:.1f}s 후 재시도", flush=True)
                 await asyncio.sleep(wait)
 
             except aiohttp.ClientResponseError as e:
                 if getattr(e, "status", None) == 429:
                     wait = min(60.0, 2.0 ** attempt) + random.uniform(0.0, 1.5)
-                    print(f"  [배치 {batch_info}] 429(예외) → {wait:.1f}s 후 재시도", flush=True)
+                    print(f"  [배치 {batch_info}] 429(예외) - {wait:.1f}s 후 재시도", flush=True)
                     await asyncio.sleep(wait)
                     continue
+                if getattr(e, "status", None) == 401:
+                    print(f"  [배치 {batch_info}] 401 Unauthorized - API 키 확인 필요", flush=True)
+                    print(f"  [배치 {batch_info}] API 키가 올바른지 확인하세요.", flush=True)
+                    return "API 호출 실패"
                 print(f"  [배치 {batch_info}] HTTP 오류: {e}", flush=True)
                 return "API 호출 실패"
 
             except Exception as e:
                 wait = min(30.0, 2.0 ** attempt) + random.uniform(0.0, 1.5)
-                print(f"  [배치 {batch_info}] 기타 오류: {e} → {wait:.1f}s 후 재시도", flush=True)
+                print(f"  [배치 {batch_info}] 기타 오류: {e} - {wait:.1f}s 후 재시도", flush=True)
                 await asyncio.sleep(wait)
 
-    print(f"  [배치 {batch_info}] 최대 재시도 초과 → 실패", flush=True)
+    print(f"  [배치 {batch_info}] 최대 재시도 초과 - 실패", flush=True)
     return "API 호출 실패"
 
 def save_results_to_sheets(results_df, spreadsheet_id, worksheet_name):
@@ -428,34 +474,65 @@ def save_results_to_sheets(results_df, spreadsheet_id, worksheet_name):
 
     return len(results_df)
 
-def get_already_processed_urls(spreadsheet_id, worksheet_name):
-    """이미 처리된 기사 URL 목록 가져오기"""
+def get_column_letter(col_num):
+    """컬럼 번호를 A1 표기법의 열 문자로 변환 (1-based)"""
+    result = ""
+    while col_num > 0:
+        col_num -= 1
+        result = chr(65 + (col_num % 26)) + result
+        col_num //= 26
+    return result
+
+def update_input_sheet_status(worksheet, row_numbers, status_value):
+    """입력 시트의 특정 행들의 status 컬럼 업데이트
+    
+    Args:
+        worksheet: gspread worksheet 객체
+        row_numbers: 시트 행 번호 리스트 (헤더 제외, 2부터 시작하는 실제 행 번호)
+        status_value: 업데이트할 status 값 (DONE, ERROR 등)
+    """
     try:
-        client = get_google_client()
-        spreadsheet = client.open_by_key(spreadsheet_id)
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        existing_data = worksheet.get_all_values()
-
-        if len(existing_data) <= 1:
-            return set()
-
-        headers = existing_data[0]
-        processed_urls = set()
-
-        url_col_idx = None
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return
+        
+        headers = all_values[0]
+        status_col_idx = None
         for idx, h in enumerate(headers):
-            if h.lower() in ("근거 기사 url", "근거기사url", "url", "링크"):
-                url_col_idx = idx
+            if h.lower() == 'status':
+                status_col_idx = idx
                 break
-
-        if url_col_idx is not None:
-            for row in existing_data[1:]:
-                if len(row) > url_col_idx and row[url_col_idx]:
-                    processed_urls.add(row[url_col_idx].strip())
-
-        return processed_urls
-    except Exception:
-        return set()
+        
+        # status 컬럼이 없으면 추가
+        if status_col_idx is None:
+            # 헤더에 status 추가
+            col_letter = get_column_letter(len(headers) + 1)
+            worksheet.update(f'{col_letter}1', [['status']])
+            status_col_idx = len(headers)
+        
+        # 각 행의 status 업데이트 (배치 업데이트)
+        updates = []
+        col_letter = get_column_letter(status_col_idx + 1)
+        for row_num in row_numbers:
+            # row_num은 이미 시트의 실제 행 번호 (2부터 시작, 1-based)
+            cell_range = f'{col_letter}{row_num}'
+            updates.append({
+                'range': cell_range,
+                'values': [[status_value]]
+            })
+        
+        if updates:
+            # 배치 업데이트 (최대 100개씩)
+            batch_size = 100
+            for i in range(0, len(updates), batch_size):
+                batch = updates[i:i + batch_size]
+                worksheet.batch_update(batch)
+            print(f"  입력 시트 status 업데이트: {len(updates)}개 행을 '{status_value}'로 업데이트", flush=True)
+        
+    except Exception as e:
+        print(f"  입력 시트 status 업데이트 오류: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
 
 def save_batch_results(accumulated_results, batch_save_size, spreadsheet_id, worksheet_name):
     """누적된 결과를 배치 단위로 저장하는 헬퍼 함수"""
@@ -493,9 +570,19 @@ def save_batch_results(accumulated_results, batch_save_size, spreadsheet_id, wor
     return saved_count, accumulated_results
 
 async def process_batch_async(session, semaphore, batch_df, competitor, batch_index, business_name, url_col):
-    """배치 하나 처리"""
+    """배치 하나 처리
+    
+    Returns:
+        tuple: (결과 리스트, 처리된 행 번호 리스트, 상태 문자열)
+               상태: 'DONE' (성공), 'ERROR' (API 실패), 'SKIP' (빈 CSV)
+    """
     analysis_data = []
-    for _, row in batch_df.iterrows():
+    processed_row_nums = []  # 처리된 시트 행 번호 추적
+    
+    for idx, row in batch_df.iterrows():
+        # 시트 행 번호 추적 (_sheet_row_num 컬럼에서 가져오기)
+        if '_sheet_row_num' in batch_df.columns:
+            processed_row_nums.append(row['_sheet_row_num'])
         # 본문 길이 제한 (토큰 절약 및 API 비용 절감)
         content = str(row['본문'])
         if len(content) > MAX_ARTICLE_CONTENT_LENGTH:
@@ -517,13 +604,15 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
 
     if csv_text in ("API 호출 실패", "응답 처리 실패"):
         print(f"  [배치 실패] 배치 {batch_index} - LLM 호출 실패", flush=True)
-        return []
+        # API 실패: ERROR 상태로 반환
+        return [], processed_row_nums, 'ERROR'
 
     try:
         csv_text_stripped = csv_text.strip()
         if not csv_text_stripped:
-            print(f"  [배치 경고] 배치 {batch_index} - 빈 CSV", flush=True)
-            return []
+            print(f"  [배치 경고] 배치 {batch_index} - 빈 CSV (SKIP 처리)", flush=True)
+            # 빈 CSV: SKIP 상태로 반환
+            return [], processed_row_nums, 'SKIP'
 
         if csv_text_stripped.startswith("```"):
             csv_text_stripped = re.sub(r"^```[a-zA-Z]*", "", csv_text_stripped)
@@ -573,9 +662,9 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
             # matched_title도 날짜 제거된 버전으로 업데이트
             matched_title = clean_title
 
-            # 배치 내 원본 행에서 경쟁사 정보 가져오기 (LLM이 반환한 경쟁사가 아닌 원본 데이터의 경쟁사 사용)
-            # matched_title로 원본 행 찾기
+            # 배치 내 원본 행에서 경쟁사 정보 가져오기
             original_competitor = competitor  # 기본값은 배치의 경쟁사
+            
             for _, orig_row in batch_df.iterrows():
                 orig_title = str(orig_row.get('제목', '')).strip()
                 if matched_title and orig_title and (matched_title in orig_title or orig_title in matched_title):
@@ -602,21 +691,23 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
             })
 
         print(f"  [배치 완료] 배치 {batch_index} - {len(batch_rows)}개 수집", flush=True)
-        return batch_rows
+        return batch_rows, processed_row_nums, 'DONE'
 
     except Exception as e:
         print(f"  [배치 CSV 파싱 오류] 배치 {batch_index}: {e}", flush=True)
         import traceback
         traceback.print_exc()
-        return []
+        return [], processed_row_nums, 'ERROR'
 
 async def main_async():
     print("--- 1. 뉴스 데이터 로드 시작 ---", flush=True)
-    df_news = get_gsheet_data(GS_SPREADSHEET_ID, GS_INPUT_WORKSHEET)
+    df_news, input_worksheet = get_gsheet_data(GS_SPREADSHEET_ID, GS_INPUT_WORKSHEET)
 
     if df_news is None or len(df_news) == 0:
         print("분석할 데이터가 없습니다.", flush=True)
         return
+
+    print(f"처리할 새로운 기사: {len(df_news)}개 (status가 DONE이 아닌 기사만)", flush=True)
 
     url_col = None
     for c in df_news.columns:
@@ -625,22 +716,9 @@ async def main_async():
             url_col = c
             break
 
-    print("--- 1-1. 이미 처리된 기사 확인 중 ---", flush=True)
-    processed_urls = get_already_processed_urls(GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET)
-    print(f"이미 처리된 기사: {len(processed_urls)}개", flush=True)
-
-    if url_col:
-        df_news = df_news[~df_news[url_col].isin(processed_urls)].reset_index(drop=True)
-
-    if len(df_news) == 0:
-        print("처리할 새로운 기사가 없습니다.", flush=True)
-        return
-
-    print(f"처리할 새로운 기사: {len(df_news)}개", flush=True)
-
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-    # ✅ (권장) 커넥터 제한/캐시로 네트워크 안정성 향상
+    # 커넥터 제한/캐시로 네트워크 안정성 향상
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, ttl_dns_cache=300)
 
     async with aiohttp.ClientSession(connector=connector) as session:
@@ -648,7 +726,7 @@ async def main_async():
         total_saved_count = 0
         BATCH_SAVE_SIZE = 5  # 5개씩 모이면 저장
 
-        # ✅ 시트 순서대로 배치 처리 (경쟁사별 그룹화 없음)
+        # 시트 순서대로 배치 처리 (경쟁사별 그룹화 없음)
         total_articles = len(df_news)
         total_batches = (total_articles + ARTICLES_PER_CALL - 1) // ARTICLES_PER_CALL
         pending = set()
@@ -674,16 +752,22 @@ async def main_async():
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for d in done:
                     try:
-                        res = d.result()
-                        if res:
-                            accumulated_results.extend(res)
-                            
-                            # ✅ 5개 이상 모이면 배치 저장
-                            count, accumulated_results = save_batch_results(
-                                accumulated_results, BATCH_SAVE_SIZE, 
-                                GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET
-                            )
-                            total_saved_count += count
+                        res, row_nums, status = d.result()
+                        if row_nums and input_worksheet:
+                            if status == 'DONE' and res and len(res) > 0:
+                                # 성공적으로 처리된 경우: 'DONE'으로 업데이트
+                                accumulated_results.extend(res)
+                                update_input_sheet_status(input_worksheet, row_nums, 'DONE')
+                                
+                                # 5개 이상 모이면 배치 저장
+                                count, accumulated_results = save_batch_results(
+                                    accumulated_results, BATCH_SAVE_SIZE, 
+                                    GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET
+                                )
+                                total_saved_count += count
+                            else:
+                                # 실패(SKIP 또는 ERROR)인 경우: status 값으로 업데이트
+                                update_input_sheet_status(input_worksheet, row_nums, status)
                     except Exception as e:
                         print(f"  [배치 태스크 오류] {e}", flush=True)
 
@@ -692,20 +776,32 @@ async def main_async():
             done, _ = await asyncio.wait(pending)
             for d in done:
                 try:
-                    res = d.result()
-                    if res:
-                        accumulated_results.extend(res)
-                        
-                        # ✅ 5개 이상 모이면 배치 저장
-                        count, accumulated_results = save_batch_results(
-                            accumulated_results, BATCH_SAVE_SIZE, 
-                            GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET
-                        )
-                        total_saved_count += count
+                    res, row_nums, status = d.result()
+                    if row_nums and input_worksheet:
+                        if status == 'DONE' and res and len(res) > 0:
+                            # 성공적으로 처리된 경우: 'DONE'으로 업데이트
+                            accumulated_results.extend(res)
+                            update_input_sheet_status(input_worksheet, row_nums, 'DONE')
+                            
+                            # ✅ 5개 이상 모이면 배치 저장
+                            count, accumulated_results = save_batch_results(
+                                accumulated_results, BATCH_SAVE_SIZE, 
+                                GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET
+                            )
+                            total_saved_count += count
+                        else:
+                            # ✅ 실패(SKIP 또는 ERROR)인 경우: status 값으로 업데이트
+                            update_input_sheet_status(input_worksheet, row_nums, status)
                 except Exception as e:
                     print(f"  [배치 태스크 오류] {e}", flush=True)
+                    # 예외 발생 시 ERROR로 표시
+                    try:
+                        task_info = getattr(d, '_coro', None)
+                        # row_nums는 추적 불가능하므로 스킵
+                    except:
+                        pass
 
-        # ✅ 남은 결과가 있으면 마지막으로 저장
+        # 남은 결과가 있으면 마지막으로 저장
         if accumulated_results:
             try:
                 final_df = pd.DataFrame(accumulated_results)

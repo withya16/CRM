@@ -51,6 +51,9 @@ def run_pipeline():
     # 3단계: DART 매핑
     print("\n[3/3] DART 매핑 시작...")
     try:
+        # dart_mapping.py는 LLM 분석 결과('경쟁사 협업 기업 리스트')를 입력으로 받음
+        import os
+        os.environ['GOOGLE_INPUT_WORKSHEET'] = os.environ.get('GOOGLE_OUTPUT_WORKSHEET', '경쟁사 협업 기업 리스트')
         dart_mapping.main()
         print("✓ DART 매핑 완료\n")
     except Exception as e:
