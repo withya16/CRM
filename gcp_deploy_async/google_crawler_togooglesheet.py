@@ -311,17 +311,54 @@ async def get_article_content_async(session, semaphore, url):
             return ""
 
 
-def normalize_url(url):
-    """URL 정규화 (http/https, trailing slash 등)"""
-    if not url:
-        return ""
-    url = url.strip()
-    # http://를 https://로 통일 (선택적)
-    # 또는 원본 유지하고 trailing slash만 제거
-    url = url.rstrip('/')
-    # 소문자로 변환 (도메인은 대소문자 구분 안 함)
-    # 하지만 경로는 대소문자 구분할 수 있으므로 원본 유지
-    return url
+def get_column_letter(col_num):
+    """컬럼 번호를 A1 표기법의 열 문자로 변환 (1-based)"""
+    result = ""
+    while col_num > 0:
+        col_num -= 1
+        result = chr(65 + (col_num % 26)) + result
+        col_num //= 26
+    return result
+
+
+def ensure_crawl_date_column(worksheet):
+    """수집날짜 컬럼이 있는지 확인하고, 없으면 status 컬럼 옆에 추가"""
+    from datetime import datetime
+    
+    try:
+        headers = worksheet.row_values(1)
+        if not headers:
+            return None
+        
+        # 크롤링 날짜 컬럼이 이미 있는지 확인
+        crawl_date_col_idx = None
+        for idx, header in enumerate(headers):
+            if header == '수집날짜':
+                return idx  # 컬럼 인덱스 반환 (0-based)
+        
+        # status 컬럼 찾기
+        status_col_idx = None
+        for idx, header in enumerate(headers):
+            if header.lower() == 'status':
+                status_col_idx = idx
+                break
+        
+        # status 컬럼 옆에 크롤링 날짜 컬럼 추가
+        if status_col_idx is not None:
+            crawl_date_col_idx = status_col_idx + 1
+        else:
+            # status 컬럼이 없으면 맨 끝에 추가
+            crawl_date_col_idx = len(headers)
+        
+        # 헤더에 크롤링 날짜 컬럼 추가
+        col_letter = get_column_letter(crawl_date_col_idx + 1)
+        worksheet.update(f'{col_letter}1', [['수집날짜']])
+        
+        return crawl_date_col_idx
+        
+    except Exception as e:
+        print(f"수집날짜 컬럼 확인 오류: {e}")
+        return None
 
 
 def get_existing_urls(worksheet):
@@ -332,26 +369,25 @@ def get_existing_urls(worksheet):
         if len(existing_data) <= 1:
             return existing_urls
         
-        # 헤더 찾기
         headers = existing_data[0]
+        # URL 컬럼 인덱스 찾기
         url_col_idx = None
         for idx, header in enumerate(headers):
-            if header.lower() in ('url', '링크', 'link'):
+            if header == 'URL':
                 url_col_idx = idx
                 break
         
-        # URL 컬럼이 없으면 마지막 컬럼 사용
         if url_col_idx is None:
-            url_col_idx = len(headers) - 1
+            return existing_urls
         
-        # 데이터 행에서 URL 추출 및 정규화
+        # URL 컬럼에서 값 가져오기
         for row in existing_data[1:]:
-            if len(row) > url_col_idx and row[url_col_idx]:
-                url = normalize_url(row[url_col_idx])
-                if url:
+            if len(row) > url_col_idx:
+                url = row[url_col_idx].strip()
+                if url:  # 빈 문자열이 아닌 경우만 추가
                     existing_urls.add(url)
-    except Exception as e:
-        print(f"기존 URL 가져오기 오류: {e}")
+    except Exception:
+        pass
     return existing_urls
 
 
@@ -359,11 +395,10 @@ async def crawl_articles_content_async(articles, existing_urls):
     """기사 본문들을 비동기로 크롤링"""
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
     
-    # 중복 제거 및 필터링 (URL 정규화 적용)
+    # 중복 제거 및 필터링
     new_articles = []
     for article in articles:
-        normalized_url = normalize_url(article['link'])
-        if normalized_url and normalized_url not in existing_urls:
+        if article['link'] not in existing_urls:
             new_articles.append(article)
     
     if not new_articles:
@@ -439,6 +474,9 @@ async def crawl_recent_news_async(
             )
             worksheet.append_row(['경쟁사', '경쟁사+키워드', '제목', '본문', 'URL'])
         
+        # 크롤링 날짜 컬럼 확인 및 추가
+        crawl_date_col_idx = ensure_crawl_date_column(worksheet)
+        
         print(f"구글 시트 연결 완료: {spreadsheet.url}")
     except Exception as e:
         print(f"구글 시트 연결 오류: {e}")
@@ -474,25 +512,43 @@ async def crawl_recent_news_async(
             parts = query.split()
             competitor = parts[0] if parts else ''
             
+            # 크롤링 날짜 (YY.MM.DD 형식)
+            from datetime import datetime
+            crawl_date = datetime.now().strftime('%y.%m.%d')
+            
+            # 시트 헤더 확인
+            headers = worksheet.row_values(1)
+            
             for article_data in article_contents:
                 url = article_data['link']
-                normalized_url = normalize_url(url)
-                
-                if not normalized_url or normalized_url in existing_urls:
+                if url in existing_urls:
                     continue
                 
-                # 정규화된 URL을 set에 추가 (다음 반복에서 중복 체크용)
-                existing_urls.add(normalized_url)
+                existing_urls.add(url)
                 
                 try:
                     content_clean = article_data['content'].replace('\n', ' ').replace('\r', ' ')[:50000]
-                    worksheet.append_row([
-                        competitor,
-                        query,
-                        article_data['title'][:50000],
-                        content_clean,
-                        url
-                    ])
+                    
+                    # 헤더 구조에 맞게 데이터 구성
+                    row_data = [''] * len(headers)
+                    
+                    # 기본 컬럼 매핑
+                    col_mapping = {
+                        '경쟁사': competitor,
+                        '경쟁사+키워드': query,
+                        '제목': article_data['title'][:50000],
+                        '본문': content_clean,
+                        'URL': url
+                    }
+                    
+                    # 각 컬럼에 데이터 할당
+                    for idx, header in enumerate(headers):
+                        if header in col_mapping:
+                            row_data[idx] = col_mapping[header]
+                        elif header == '수집날짜':
+                            row_data[idx] = crawl_date
+                    
+                    worksheet.append_row(row_data)
                     new_articles_count += 1
                     print(f"  ✓ 시트에 저장: {article_data['title'][:50]}...")
                 except Exception as e:

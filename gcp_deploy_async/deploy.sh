@@ -4,7 +4,7 @@
 set -e
 
 # 설정 변수 (비동기 버전)
-PROJECT_ID=${GCP_PROJECT_ID:-"crmcraling"}
+PROJECT_ID=${GCP_PROJECT_ID:-"crmcrawling"}
 REGION=${GCP_REGION:-"asia-northeast3"}  # 서울 리전
 IMAGE_NAME="crawler-pipeline-async"  # 비동기 버전 이미지 이름
 IMAGE_TAG="latest"
