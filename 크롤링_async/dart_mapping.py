@@ -8,10 +8,6 @@ DART 기업 리스트와 LLM 분석 결과 매핑 스크립트
 3) '협력사/기관명'과 DART 기업명(corp_name)을 이름 기준으로 매핑
 4) 매핑 결과를 출력 시트에 저장
 
-[요구 반영]
-- 입력 시트는 절대 수정하지 않음 (읽기만)
-- 출력 시트에는 "입력 시트 원본 컬럼들 + 3개 컬럼 추가" 형태로 append 저장:
-  norm_partner_name, dart_match(TRUE/FALSE), dart_corp_name
 """
 
 # ============================================================================
@@ -224,7 +220,7 @@ def main():
         print(f"컬럼 이름 '{partner_col}'을 '협력사/기관명'으로 매핑합니다.")
         df = df.rename(columns={partner_col: "협력사/기관명"})
 
-    # ✅ 출력시트에 "원래 입력시트 + 3개 컬럼"이 되도록,
+    # 출력시트에 "원래 입력시트 + 3개 컬럼"이 되도록,
     #    입력 원본 컬럼들을 먼저 확정(추가 컬럼 제외)
     base_cols = [c for c in df.columns if c not in ADD_COLS]
 
@@ -263,7 +259,7 @@ def main():
     # 저장용 TRUE/FALSE 문자열 변환
     merged["dart_match"] = merged["dart_match_bool"].map({True: "TRUE", False: "FALSE"})
 
-    # ✅ 출력 시트 저장: 입력시트 원본 컬럼 + 3개 컬럼
+    # 출력 시트 저장: 입력시트 원본 컬럼 + 3개 컬럼
     output_cols = base_cols + ADD_COLS
     merged_to_save = merged[output_cols].copy()
 

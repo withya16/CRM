@@ -7,16 +7,6 @@
 2) 경쟁사별 기사들을 배치로 나눠 LLM 분석하여 파트너십 목록 생성
 3) 결과를 Google Sheets에 저장 (기사 제목에서 날짜 추출 포함)
 
-[이번 수정에서 해결하려는 문제]
-- 비동기로 여러 요청이 한꺼번에 나가면서 429(Too Many Requests) 연속 발생
-- 429 발생 시 즉시 재시도/짧은 sleep만 하면 더 악화되는 문제
-
-[해결 방식]
-- RPM(요청/분), TPM(토큰/분) 슬라이딩 윈도우 리미터 도입
-- 429 응답의 Retry-After 헤더가 있으면 그 값을 우선 사용
-- 없으면 지수 백오프 + 랜덤 지터로 재시도
-- 배치 작업을 한꺼번에 gather로 "태스크 폭발"시키지 않고,
-  in-flight 제한(작업 큐처럼)으로 점진적으로 실행
 """
 
 # ============================================================================
@@ -551,7 +541,7 @@ def update_input_sheet_status(worksheet, row_numbers, status_value):
         if status_col_idx is None:
             # 헤더에 status 추가
             col_letter = get_column_letter(len(headers) + 1)
-            worksheet.update(f'{col_letter}1', [['status']])
+            worksheet.update(f'{col_letter}1', 'status')
             status_col_idx = len(headers)
         
         # 각 행의 status 업데이트 (배치 업데이트)
@@ -680,31 +670,38 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
             matched_url = ""
             original_title_for_date = ""  # 날짜 추출용 원본 제목
 
+            # 원본 제목에서 매칭 찾기
             for _, orig_row in batch_df.iterrows():
                 orig_title = str(orig_row.get('제목', '')).strip()
                 if orig_title and llm_title:
                     if llm_title in orig_title or orig_title in llm_title:
-                        matched_title = orig_title
                         original_title_for_date = orig_title  # 원본 제목 저장 (날짜 포함)
                         if url_col:
                             matched_url = str(orig_row.get(url_col, '')).strip()
                         break
                     elif len(llm_title) > 10 and len(orig_title) > 10:
                         if llm_title[:30] in orig_title or orig_title[:30] in llm_title:
-                            matched_title = orig_title
                             original_title_for_date = orig_title  # 원본 제목 저장 (날짜 포함)
                             if url_col:
                                 matched_url = str(orig_row.get(url_col, '')).strip()
                             break
 
-            if not matched_title:
-                matched_title = llm_title
+            # 매칭된 원본 제목이 없으면 LLM 제목 사용 (하지만 날짜는 없을 수 있음)
+            if not original_title_for_date:
                 original_title_for_date = llm_title
 
             # 원본 제목에서 날짜 추출 (원본 제목에 날짜가 포함되어 있음)
-            date_str, clean_title = extract_date_from_title(original_title_for_date)
-            # matched_title도 날짜 제거된 버전으로 업데이트
-            matched_title = clean_title
+            if original_title_for_date:
+                date_str, clean_title = extract_date_from_title(original_title_for_date)
+                # matched_title 설정: 날짜가 제거된 제목 사용
+                if clean_title:
+                    matched_title = clean_title
+                else:
+                    matched_title = original_title_for_date
+            else:
+                # 원본 제목을 찾지 못한 경우 LLM 제목에서 날짜 추출 시도
+                date_str, clean_title = extract_date_from_title(llm_title)
+                matched_title = clean_title if clean_title else llm_title
 
             # 배치 내 원본 행에서 경쟁사 정보 가져오기
             original_competitor = competitor  # 기본값은 배치의 경쟁사
@@ -827,14 +824,14 @@ async def main_async():
                             accumulated_results.extend(res)
                             update_input_sheet_status(input_worksheet, row_nums, 'DONE')
                             
-                            # 5개 이상 모이면 배치 저장
+                            # ✅ 5개 이상 모이면 배치 저장
                             count, accumulated_results = save_batch_results(
                                 accumulated_results, BATCH_SAVE_SIZE, 
                                 GS_SPREADSHEET_ID, GS_OUTPUT_WORKSHEET
                             )
                             total_saved_count += count
                         else:
-                            # 실패(SKIP 또는 ERROR)인 경우: status 값으로 업데이트
+                            # ✅ 실패(SKIP 또는 ERROR)인 경우: status 값으로 업데이트
                             update_input_sheet_status(input_worksheet, row_nums, status)
                 except Exception as e:
                     print(f"  [배치 태스크 오류] {e}", flush=True)
