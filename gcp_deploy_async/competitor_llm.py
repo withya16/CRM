@@ -168,6 +168,10 @@ def get_gsheet_data(spreadsheet_id, worksheet_name):
             print("오류: 데이터에 '경쟁사', '제목', '본문' 컬럼이 부족합니다.", flush=True)
             return None, None
 
+        # 기사 날짜 컬럼 확인 (없으면 빈 문자열로 생성)
+        if '기사 날짜' not in df.columns:
+            df['기사 날짜'] = ''
+
         # status 컬럼이 없으면 생성 (기본값: 빈 문자열)
         if 'status' not in df.columns and 'Status' not in df.columns:
             df['status'] = ''
@@ -184,6 +188,7 @@ def get_gsheet_data(spreadsheet_id, worksheet_name):
         cols = required_cols.copy()
         if url_col:
             cols.append(url_col)
+        cols.append('기사 날짜')
         cols.append('status')
         
         # 실제 시트 행 번호 매핑 (헤더 제외, 2부터 시작, 필터링 전에 추가)
@@ -621,10 +626,11 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
         content = str(row['본문'])
         if len(content) > MAX_ARTICLE_CONTENT_LENGTH:
             content = content[:MAX_ARTICLE_CONTENT_LENGTH] + "..."
-        
+
         item = {
             "기사 제목": row['제목'],
             "기사 본문": content,
+            "기사 날짜": str(row.get('기사 날짜', '')).strip(),  # 입력 시트에서 가져온 날짜
         }
         if url_col:
             item["기사 URL"] = row[url_col]
@@ -668,40 +674,38 @@ async def process_batch_async(session, semaphore, batch_df, competitor, batch_in
 
             matched_title = ""
             matched_url = ""
-            original_title_for_date = ""  # 날짜 추출용 원본 제목
+            article_date_from_input = ""  # 입력 시트에서 가져온 날짜
 
             # 원본 제목에서 매칭 찾기
             for _, orig_row in batch_df.iterrows():
                 orig_title = str(orig_row.get('제목', '')).strip()
                 if orig_title and llm_title:
                     if llm_title in orig_title or orig_title in llm_title:
-                        original_title_for_date = orig_title  # 원본 제목 저장 (날짜 포함)
+                        matched_title = orig_title
+                        article_date_from_input = str(orig_row.get('기사 날짜', '')).strip()
                         if url_col:
                             matched_url = str(orig_row.get(url_col, '')).strip()
                         break
                     elif len(llm_title) > 10 and len(orig_title) > 10:
                         if llm_title[:30] in orig_title or orig_title[:30] in llm_title:
-                            original_title_for_date = orig_title  # 원본 제목 저장 (날짜 포함)
+                            matched_title = orig_title
+                            article_date_from_input = str(orig_row.get('기사 날짜', '')).strip()
                             if url_col:
                                 matched_url = str(orig_row.get(url_col, '')).strip()
                             break
 
-            # 매칭된 원본 제목이 없으면 LLM 제목 사용 (하지만 날짜는 없을 수 있음)
-            if not original_title_for_date:
-                original_title_for_date = llm_title
+            # 매칭된 원본 제목이 없으면 LLM 제목 사용
+            if not matched_title:
+                matched_title = llm_title
 
-            # 원본 제목에서 날짜 추출 (원본 제목에 날짜가 포함되어 있음)
-            if original_title_for_date:
-                date_str, clean_title = extract_date_from_title(original_title_for_date)
-                # matched_title 설정: 날짜가 제거된 제목 사용
+            # 날짜 결정: 입력 시트에서 가져온 날짜 사용, 없으면 제목에서 추출 시도
+            if article_date_from_input:
+                date_str = article_date_from_input
+            else:
+                # 제목에서 날짜 추출 시도 (fallback)
+                date_str, clean_title = extract_date_from_title(matched_title)
                 if clean_title:
                     matched_title = clean_title
-                else:
-                    matched_title = original_title_for_date
-            else:
-                # 원본 제목을 찾지 못한 경우 LLM 제목에서 날짜 추출 시도
-                date_str, clean_title = extract_date_from_title(llm_title)
-                matched_title = clean_title if clean_title else llm_title
 
             # 배치 내 원본 행에서 경쟁사 정보 가져오기
             original_competitor = competitor  # 기본값은 배치의 경쟁사

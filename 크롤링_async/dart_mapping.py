@@ -42,6 +42,20 @@ GS_SPREADSHEET_ID = os.getenv(
 # 출력에 추가할 3개 컬럼(고정)
 ADD_COLS = ["norm_partner_name", "dart_match", "dart_corp_name"]
 
+# 출력 시트 컬럼 순서 (명시적으로 지정)
+OUTPUT_COLUMN_ORDER = [
+    "사업명",
+    "경쟁사",
+    "협력사/기관명",
+    "협력 유형",
+    "근거 기사 제목",
+    "근거 기사 URL",
+    "기사 날짜",
+    "norm_partner_name",
+    "dart_match",
+    "dart_corp_name"
+]
+
 if not DART_API_KEY:
     raise ValueError("DART_API_KEY 가 .env 에 설정되어 있지 않습니다. (예: DART_API_KEY=발급받은키)")
 
@@ -89,27 +103,58 @@ def get_google_client():
 
 
 def get_gsheet_data(spreadsheet_id, worksheet_name):
-    """Google Sheets 데이터를 Pandas DataFrame으로 로드"""
+    """Google Sheets 데이터를 Pandas DataFrame으로 로드 (status가 DONE이 아닌 행만)"""
     try:
         client = get_google_client()
         spreadsheet = client.open_by_key(spreadsheet_id)
         worksheet = spreadsheet.worksheet(worksheet_name)
-        df = pd.DataFrame(worksheet.get_all_records())
-
-        if len(df) == 0:
+        all_data = worksheet.get_all_values()
+        
+        if len(all_data) <= 1:
             print(f"시트 '{worksheet_name}'에 데이터가 없습니다.")
-            return None
+            return None, None, []
+        
+        headers = all_data[0]
+        df = pd.DataFrame(all_data[1:], columns=headers)
+        
+        # 행 번호 추가 (시트의 실제 행 번호, 2부터 시작)
+        df['_sheet_row_num'] = range(2, 2 + len(df))
+        
+        # status 컬럼 확인
+        status_col = None
+        for col in df.columns:
+            if col.lower() == 'status':
+                status_col = col
+                break
+        
+        # status 필터링: DONE이 아닌 것만 처리
+        if status_col and status_col in df.columns:
+            df['_status_upper'] = df[status_col].astype(str).str.strip().str.upper()
+            original_count = len(df)
+            df = df[df['_status_upper'] != 'DONE'].reset_index(drop=True)
+            df = df.drop(columns=['_status_upper'], errors='ignore')
+            filtered_count = len(df)
+            print(f"status 필터링: {original_count}개 중 {filtered_count}개 처리 대상 (DONE 제외)")
+        else:
+            print(f"경고: '{worksheet_name}' 시트에 status 컬럼이 없습니다. 모든 행을 처리합니다.")
+        
+        if len(df) == 0:
+            print(f"처리할 데이터가 없습니다 (모두 DONE 상태 또는 데이터 없음).")
+            return None, None, []
 
-        return df
+        return df, worksheet, df['_sheet_row_num'].tolist()
     except Exception as e:
         print(f"Google Sheets 로드 실패: {e}")
-        return None
+        import traceback
+        traceback.print_exc()
+        return None, None, []
 
 
 def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, df):
     """
     출력 시트에 결과를 append 저장 (기존 데이터 유지, 새 데이터만 추가)
     - df는 "입력시트 컬럼들 + 3개 컬럼" 형태로 이미 만들어져 있어야 함
+    - 기존 시트 헤더와 DataFrame 컬럼이 다르면 DataFrame 컬럼 기준으로 저장
     """
     client = get_google_client()
     spreadsheet = client.open_by_key(spreadsheet_id)
@@ -118,6 +163,9 @@ def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, d
         if df is None or len(df) == 0:
             print("저장할 데이터가 없습니다.")
             return 0
+
+        # DataFrame 컬럼 (저장할 데이터의 컬럼)
+        df_columns = list(df.columns)
 
         # 출력 시트 확인 (있으면 기존 시트 사용, 없으면 새로 생성)
         try:
@@ -131,31 +179,47 @@ def save_to_new_sheet_with_dart_mapping(spreadsheet_id, output_worksheet_name, d
             )
             print(f"새 시트 '{output_worksheet_name}' 생성 완료")
 
-        # 기존 시트의 헤더 가져오기 (없으면 새로 생성)
-        existing_output_headers = []
+        # 기존 시트의 헤더 가져오기
+        existing_headers = []
         try:
-            existing_output_headers = output_worksheet.row_values(1)
+            existing_headers = output_worksheet.row_values(1)
         except Exception:
-            existing_output_headers = []
+            existing_headers = []
 
-        # 헤더가 없으면 새로 생성
-        if not existing_output_headers:
-            output_headers = list(df.columns)
-            output_worksheet.append_row(output_headers)
+        # 헤더 결정
+        if not existing_headers:
+            # 헤더가 없으면 DataFrame 컬럼으로 새로 생성
+            output_worksheet.update('A1', [df_columns])
+            output_headers = df_columns
+            print(f"  새 헤더 생성: {df_columns}")
+        elif existing_headers == df_columns:
+            # 기존 헤더와 동일하면 그대로 사용
+            output_headers = existing_headers
         else:
-            # 기존 헤더 유지 (갱신하지 않음)
-            output_headers = existing_output_headers
+            # 기존 헤더와 다르면 DataFrame 컬럼 기준으로 저장
+            # (기존 데이터와 컬럼 불일치 발생 가능 - 경고 출력)
+            print(f"  경고: 기존 헤더({len(existing_headers)}개)와 새 데이터 컬럼({len(df_columns)}개)이 다릅니다.")
+            print(f"  기존 헤더: {existing_headers[:5]}...")
+            print(f"  새 컬럼: {df_columns[:5]}...")
+            print(f"  DataFrame 컬럼 순서대로 데이터를 저장합니다.")
+            output_headers = df_columns
 
         # 데이터를 배치로 추가 (한 번에 최대 500행씩)
-        # 기존 시트의 컬럼 순서에 맞게 데이터 매핑
         batch_size = 500
         rows_to_add = []
         for _, row in df.iterrows():
-            # 기존 시트의 헤더 순서에 맞게 데이터 매핑
+            # DataFrame 컬럼 순서대로 데이터 구성
             row_values = []
             for col_name in output_headers:
-                # 컬럼명으로 데이터 가져오기 (없으면 빈 문자열)
-                value = str(row.get(col_name, "")).strip() if col_name in df.columns else ""
+                if col_name in df.columns:
+                    value = row.get(col_name, "")
+                    # NaN 처리
+                    if pd.isna(value):
+                        value = ""
+                    else:
+                        value = str(value).strip()
+                else:
+                    value = ""
                 row_values.append(value)
             rows_to_add.append(row_values)
 
@@ -183,6 +247,71 @@ def normalize_name(name: str) -> str:
     return "".join(str(name).strip().split()).upper()
 
 
+def get_column_letter(col_num):
+    """컬럼 번호를 A1 표기법의 열 문자로 변환 (1-based)"""
+    result = ""
+    while col_num > 0:
+        col_num -= 1
+        result = chr(65 + (col_num % 26)) + result
+        col_num //= 26
+    return result
+
+
+def update_input_sheet_status(worksheet, row_numbers, status_value):
+    """입력 시트의 특정 행들의 status 컬럼을 DONE으로 업데이트
+    
+    Args:
+        worksheet: gspread worksheet 객체
+        row_numbers: 시트 행 번호 리스트 (헤더 제외, 2부터 시작하는 실제 행 번호)
+        status_value: 업데이트할 status 값 (DONE)
+    """
+    try:
+        if not row_numbers:
+            return
+        
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return
+        
+        headers = all_values[0]
+        status_col_idx = None
+        for idx, h in enumerate(headers):
+            if h.lower() == 'status':
+                status_col_idx = idx
+                break
+        
+        # status 컬럼이 없으면 추가
+        if status_col_idx is None:
+            # 헤더에 status 추가
+            col_letter = get_column_letter(len(headers) + 1)
+            worksheet.update(f'{col_letter}1', 'status')
+            status_col_idx = len(headers)
+        
+        # 각 행의 status 업데이트 (배치 업데이트)
+        updates = []
+        col_letter = get_column_letter(status_col_idx + 1)
+        for row_num in row_numbers:
+            # row_num은 이미 시트의 실제 행 번호 (2부터 시작, 1-based)
+            cell_range = f'{col_letter}{row_num}'
+            updates.append({
+                'range': cell_range,
+                'values': [[status_value]]
+            })
+        
+        if updates:
+            # 배치 업데이트 (최대 100개씩)
+            batch_size = 100
+            for i in range(0, len(updates), batch_size):
+                batch = updates[i:i + batch_size]
+                worksheet.batch_update(batch)
+            print(f"입력 시트 status 업데이트: {len(updates)}개 행을 '{status_value}'로 업데이트")
+        
+    except Exception as e:
+        print(f"입력 시트 status 업데이트 오류: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def main():
     """
     입력 시트의 협력사명을 DART 기업 리스트와 매핑하여
@@ -197,13 +326,13 @@ def main():
 
     print("\n--- 2. Google Sheets에서 데이터 로드 ---")
     print(f"입력 시트: {input_worksheet}")
-    df = get_gsheet_data(GS_SPREADSHEET_ID, input_worksheet)
+    df, input_worksheet_obj, processed_row_numbers = get_gsheet_data(GS_SPREADSHEET_ID, input_worksheet)
 
     if df is None or len(df) == 0:
-        print("분석할 데이터가 없습니다.")
-        sys.exit(1)
+        print("처리할 데이터가 없습니다 (모두 DONE 상태 또는 데이터 없음).")
+        sys.exit(0)
 
-    print(f"로드된 데이터: {len(df)}개 행")
+    print(f"로드된 데이터: {len(df)}개 행 (status가 DONE이 아닌 행만)")
     print(f"컬럼 목록: {list(df.columns)}")
 
     # 컬럼 이름 매핑: '이용기업' 또는 '협력사/기관명' 모두 지원
@@ -221,8 +350,8 @@ def main():
         df = df.rename(columns={partner_col: "협력사/기관명"})
 
     # 출력시트에 "원래 입력시트 + 3개 컬럼"이 되도록,
-    #    입력 원본 컬럼들을 먼저 확정(추가 컬럼 제외)
-    base_cols = [c for c in df.columns if c not in ADD_COLS]
+    #    입력 원본 컬럼들을 먼저 확정(추가 컬럼 및 내부 컬럼 제외)
+    base_cols = [c for c in df.columns if c not in ADD_COLS and not c.startswith('_')]
 
     # 새로 추가되는 컬럼
     df["norm_partner_name"] = df["협력사/기관명"].apply(normalize_name)
@@ -259,8 +388,18 @@ def main():
     # 저장용 TRUE/FALSE 문자열 변환
     merged["dart_match"] = merged["dart_match_bool"].map({True: "TRUE", False: "FALSE"})
 
-    # 출력 시트 저장: 입력시트 원본 컬럼 + 3개 컬럼
-    output_cols = base_cols + ADD_COLS
+    # 출력 시트 저장: 지정된 컬럼 순서로 재정렬
+    # OUTPUT_COLUMN_ORDER에 있는 컬럼만 선택하고, 없는 컬럼은 빈 값으로 추가
+    output_cols = []
+    for col in OUTPUT_COLUMN_ORDER:
+        if col in merged.columns:
+            output_cols.append(col)
+        else:
+            # 없는 컬럼은 빈 값으로 추가
+            merged[col] = ""
+            output_cols.append(col)
+            print(f"경고: '{col}' 컬럼이 입력 데이터에 없어 빈 값으로 추가합니다.")
+    
     merged_to_save = merged[output_cols].copy()
 
     print("\n--- 4. Google Sheets에 결과 저장(출력 시트 append) ---")
@@ -272,6 +411,14 @@ def main():
         print(f"\n매핑 실패한 협력사: {unmatched_count}개 (dart_match=FALSE)")
     else:
         print("\n모든 협력사가 DART 기업 리스트와 매칭되었습니다.")
+    
+    # 처리 완료 후 입력 시트의 status를 DONE으로 업데이트
+    print("\n--- 5. 입력 시트 status 업데이트 (DONE) ---")
+    if input_worksheet_obj and processed_row_numbers:
+        update_input_sheet_status(input_worksheet_obj, processed_row_numbers, 'DONE')
+        print(f"처리 완료: {len(processed_row_numbers)}개 행의 status를 DONE으로 업데이트했습니다.")
+    else:
+        print("입력 시트 정보가 없어 status를 업데이트할 수 없습니다.")
 
 
 if __name__ == "__main__":
