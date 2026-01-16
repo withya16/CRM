@@ -1,0 +1,41 @@
+feat: DART 매핑에 status 필터링, 기사 발행일 추출 및 컬럼 순서 개선
+
+주요 변경사항:
+- dart_mapping.py에 status 기반 필터링 추가
+  * status가 'DONE'이 아닌 행만 처리하도록 개선
+  * 처리 완료 후 입력 시트의 status를 'DONE'으로 자동 업데이트
+  * 중복 처리 방지 및 처리 상태 추적 가능
+
+- 출력 시트 컬럼 순서 명시적 지정
+  * OUTPUT_COLUMN_ORDER 상수로 출력 컬럼 순서 정의
+  * 사업명, 경쟁사, 협력사/기관명, 협력 유형, 근거 기사 제목,
+    근거 기사 URL, 기사 날짜, norm_partner_name, dart_match, dart_corp_name 순서로 고정
+  * 일관된 출력 형식 보장
+
+- 기사 발행일 추출 기능 추가
+  * 크롤링 파이프라인에 기사 발행일 추출 기능 구현
+  * 제목, URL, HTML에서 날짜 추출 로직 추가
+
+- 시트 컬럼 순서 개선
+  * RAW 시트 컬럼 순서: 경쟁사, 경쟁사+키워드, 제목, 본문, URL, 기사 날짜, 수집날짜, status
+  * 일관된 데이터 구조 보장
+
+- competitor_llm.py 개선
+  * 입력 시트의 기사 날짜를 사용하도록 수정
+  * 기사 날짜 컬럼 활용 로직 추가
+
+- dart_mapping.py 컬럼 불일치 문제 수정
+  * 입력/출력 시트 간 컬럼 불일치 문제 해결
+  * 컬럼 매핑 로직 개선
+
+- 코드 리팩토링 및 개선
+  * google_crawler_togooglesheet.py 코드 개선
+  * 에러 처리 및 로깅 개선
+
+변경된 파일:
+- 크롤링_async/dart_mapping.py
+- 크롤링_async/competitor_llm.py
+- 크롤링_async/google_crawler_togooglesheet.py
+- gcp_deploy_async/dart_mapping.py
+- gcp_deploy_async/competitor_llm.py
+- gcp_deploy_async/google_crawler_togooglesheet.py
